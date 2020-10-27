@@ -53,6 +53,7 @@ pub struct Fs {
     pub(crate) device_state: DeviceState,
     config: VirtioFsConfig,
     server: Server<PassthroughFs>,
+    shm_region: Option<(u64, u64)>,
 }
 
 impl Fs {
@@ -87,6 +88,7 @@ impl Fs {
             device_state: DeviceState::Inactive,
             config,
             server: Server::new(PassthroughFs::new(fs_cfg).unwrap()),
+            shm_region: None,
         })
     }
 
@@ -96,6 +98,11 @@ impl Fs {
             .map(|&max_size| VirtQueue::new(max_size))
             .collect();
         Self::with_queues(fs_id, shared_dir, queues)
+    }
+
+    pub fn set_shm_region(&mut self, host_base: u64, size: u64) {
+        println!("set_shm_region: {:?}", host_base);
+        self.shm_region = Some((host_base, size));
     }
 
     pub fn id(&self) -> &str {
@@ -148,8 +155,13 @@ impl Fs {
                 .map_err(FsError::QueueWriter)
                 .unwrap();
 
+            let (shm_base, shm_size) = if let Some(shm_region) = self.shm_region {
+                (shm_region.0, shm_region.1)
+            } else {
+                (0, 0)
+            };
             self.server
-                .handle_message(reader, writer)
+                .handle_message(reader, writer, shm_base, shm_size)
                 //.map_err(FsError::ProcessQueue)
                 .unwrap();
 
@@ -245,5 +257,9 @@ impl VirtioDevice for Fs {
             DeviceState::Inactive => false,
             DeviceState::Activated(_) => true,
         }
+    }
+
+    fn get_shm_region(&self) -> Option<(u64, u64)> {
+        Some((arch::MMIO_SHM_START, arch::MMIO_SHM_SIZE))
     }
 }

@@ -9,6 +9,7 @@ use libc::{c_int, c_void, siginfo_t};
 use std::cell::Cell;
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::ptr::null_mut;
 use std::result;
 use std::sync::atomic::{fence, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -378,6 +379,7 @@ impl KvmContext {
 /// A wrapper around creating and using a VM.
 pub struct Vm {
     fd: VmFd,
+    host_shm_base: u64,
 
     // X86 specific fields.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -407,6 +409,7 @@ impl Vm {
 
         Ok(Vm {
             fd: vm_fd,
+            host_shm_base: 0,
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             supported_cpuid,
             #[cfg(target_arch = "x86_64")]
@@ -456,12 +459,40 @@ impl Vm {
             })
             .map_err(Error::SetUserMemoryRegion)?;
 
+        let host_addr = unsafe {
+            libc::mmap(
+                null_mut(),
+                arch::MMIO_SHM_SIZE as usize,
+                libc::PROT_NONE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+                -1,
+                0 as libc::off_t,
+            )
+        };
+        let memory_region = kvm_userspace_memory_region {
+            slot: guest_mem.num_regions() as u32,
+            guest_phys_addr: arch::MMIO_SHM_START,
+            memory_size: arch::MMIO_SHM_SIZE,
+            userspace_addr: host_addr as u64,
+            flags: 0,
+        };
+        unsafe {
+            self.fd
+                .set_user_memory_region(memory_region)
+                .map_err(Error::SetUserMemoryRegion)?
+        };
+        self.host_shm_base = host_addr as u64;
+
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(arch::x86_64::layout::KVM_TSS_ADDRESS as usize)
             .map_err(Error::VmSetup)?;
 
         Ok(())
+    }
+
+    pub fn get_host_shm_base(&self) -> u64 {
+        self.host_shm_base
     }
 
     /// Creates the irq chip and an in-kernel device model for the PIT.

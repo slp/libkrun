@@ -108,6 +108,11 @@ pub trait VirtioDevice: AsAny + Send {
     fn reset(&mut self) -> Option<(EventFd, Vec<EventFd>)> {
         None
     }
+
+    /// Get base and size of the SHM region
+    fn get_shm_region(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 impl std::fmt::Debug for dyn VirtioDevice {

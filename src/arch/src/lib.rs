@@ -32,7 +32,8 @@ pub mod x86_64;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::{
     arch_memory_regions, configure_system, get_kernel_start, initrd_load_addr,
-    layout::CMDLINE_MAX_SIZE, layout::IRQ_BASE, layout::IRQ_MAX, Error, MMIO_MEM_START,
+    layout::CMDLINE_MAX_SIZE, layout::IRQ_BASE, layout::IRQ_MAX, Error, MMIO_MEM_SIZE,
+    MMIO_MEM_START, MMIO_SHM_SIZE, MMIO_SHM_START,
 };
 
 /// Type for returning public functions outcome.

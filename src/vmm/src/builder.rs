@@ -272,6 +272,7 @@ pub fn build_microvm(
         kernel_bundle.guest_addr,
         kernel_bundle.size,
     )?;
+
     let vcpu_config = vm_resources.vcpu_config();
 
     // Clone the command-line so that a failed boot doesn't pollute the original.
@@ -282,6 +283,7 @@ pub fn build_microvm(
         Some(s) => kernel_cmdline.insert_str(s).unwrap(),
     };
     let mut vm = setup_kvm_vm(&guest_memory)?;
+    let host_shm_base = vm.get_host_shm_base();
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
@@ -297,7 +299,8 @@ pub fn build_microvm(
     } else {
         None
     };
-     */
+    */
+
     let serial_device = None;
 
     let exit_evt = EventFd::new(libc::EFD_NONBLOCK)
@@ -385,7 +388,12 @@ pub fn build_microvm(
 
     attach_balloon_device(&mut vmm, event_manager)?;
     attach_console_devices(&mut vmm, event_manager)?;
-    attach_fs_devices(&mut vmm, &vm_resources.fs, event_manager)?;
+    attach_fs_devices(
+        &mut vmm,
+        &vm_resources.fs,
+        event_manager,
+        host_shm_base as u64,
+    )?;
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager)?;
     }
@@ -635,11 +643,16 @@ fn attach_fs_devices(
     vmm: &mut Vmm,
     fs_devs: &FsBuilder,
     event_manager: &mut EventManager,
+    host_shm_base: u64,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     for fs in fs_devs.list.iter() {
         let id = String::from(fs.lock().unwrap().id());
+
+        fs.lock()
+            .unwrap()
+            .set_shm_region(host_shm_base, arch::MMIO_SHM_SIZE);
 
         event_manager
             .add_subscriber(fs.clone())
