@@ -50,8 +50,8 @@ impl fmt::Display for Error {
             }
             Error::EventFd(ref e) => write!(f, "failed to create or clone event descriptor: {}", e),
             Error::IrqsExhausted => write!(f, "no more IRQs are available"),
-            Error::RegisterIoEvent(ref e) => write!(f, "failed to register IO event: {}", e),
-            Error::RegisterIrqFd(ref e) => write!(f, "failed to register irqfd: {}", e),
+            //Error::RegisterIoEvent(ref e) => write!(f, "failed to register IO event: {}", e),
+            //Error::RegisterIrqFd(ref e) => write!(f, "failed to register irqfd: {}", e),
             Error::DeviceNotFound => write!(f, "the device couldn't be found"),
             Error::UpdateFailed => write!(f, "failed to update the mmio device"),
         }
@@ -205,7 +205,7 @@ impl MMIODeviceManager {
         }
 
         // Attaching the RTC device.
-        let rtc_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?;
+        let rtc_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?;
         let device = devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
         vm.register_irqfd(&rtc_evt, self.irq)
             .map_err(Error::RegisterIrqFd)?;
@@ -321,8 +321,8 @@ mod tests {
             DummyDevice {
                 dummy: 0,
                 queues: QUEUE_SIZES.iter().map(|&s| Queue::new(s)).collect(),
-                queue_evts: [EventFd::new(libc::EFD_NONBLOCK).expect("cannot create eventFD")],
-                interrupt_evt: EventFd::new(libc::EFD_NONBLOCK).expect("cannot create eventFD"),
+                queue_evts: [EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD")],
+                interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD"),
             }
         }
     }

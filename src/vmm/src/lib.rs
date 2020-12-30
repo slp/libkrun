@@ -10,7 +10,9 @@
 //! machine (microVM).
 //#![deny(missing_docs)]
 
+#[cfg(target_os = "linux")]
 extern crate kvm_bindings;
+#[cfg(target_os = "linux")]
 extern crate kvm_ioctls;
 extern crate libc;
 extern crate polly;
@@ -31,10 +33,19 @@ pub(crate) mod device_manager;
 /// Resource store for configured microVM resources.
 pub mod resources;
 /// Signal handling utilities.
+#[cfg(target_os = "linux")]
 pub mod signal_handler;
 /// Wrappers over structures used to configure the VMM.
 pub mod vmm_config;
-mod vstate;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::vstate;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::vstate;
 
 use std::fmt::{Display, Formatter};
 use std::io;

@@ -9,11 +9,11 @@ pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
-use self::linux::*;
+pub use self::linux::*;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "macos")]
-use self::macos::*;
+pub use self::macos::*;
 
 use std::cmp::min;
 use std::collections::HashMap;
@@ -40,7 +40,11 @@ use DeviceType;
 
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
-pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
+pub fn arch_memory_regions(
+    size: usize,
+    _kernel_load_addr: u64,
+    _kernel_size: usize,
+) -> Vec<(GuestAddress, usize)> {
     let dram_size = min(size as u64, layout::DRAM_MEM_MAX_SIZE) as usize;
     vec![(GuestAddress(layout::DRAM_MEM_START), dram_size)]
 }

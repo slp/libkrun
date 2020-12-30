@@ -4,10 +4,12 @@
 //#![deny(warnings)]
 
 use vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
+#[cfg(target_os = "linux")]
 use vmm_config::fs::*;
 use vmm_config::kernel_bundle::{KernelBundle, KernelBundleError};
 use vmm_config::logger::LoggerConfigError;
 use vmm_config::machine_config::{VmConfig, VmConfigError};
+#[cfg(target_os = "linux")]
 use vmm_config::vsock::*;
 use vstate::VcpuConfig;
 
@@ -21,12 +23,14 @@ pub enum Error {
     /// Boot source configuration error.
     BootSource(BootSourceConfigError),
     /// Fs device configuration error.
+    #[cfg(target_os = "linux")]
     FsDevice(FsConfigError),
     /// Logger configuration error.
     Logger(LoggerConfigError),
     /// microVM vCpus or memory configuration error.
     VmConfig(VmConfigError),
     /// Vsock device configuration error.
+    #[cfg(target_os = "linux")]
     VsockDevice(VsockConfigError),
 }
 
@@ -41,8 +45,10 @@ pub struct VmResources {
     /// The parameters for the kernel bundle to be loaded in this microVM.
     pub kernel_bundle: Option<KernelBundle>,
     /// The fs device.
+    #[cfg(target_os = "linux")]
     pub fs: FsBuilder,
     /// The vsock device.
+    #[cfg(target_os = "linux")]
     pub vsock: VsockBuilder,
 }
 
@@ -136,11 +142,13 @@ impl VmResources {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn set_fs_device(&mut self, config: FsDeviceConfig) -> Result<FsConfigError> {
         self.fs.insert(config)
     }
 
     /// Sets a vsock device to be attached when the VM starts.
+    #[cfg(target_os = "linux")]
     pub fn set_vsock_device(&mut self, config: VsockDeviceConfig) -> Result<VsockConfigError> {
         self.vsock.insert(config)
     }

@@ -13,17 +13,21 @@ use std::io::Error as IOError;
 pub mod balloon;
 pub mod console;
 pub mod device;
+#[cfg(target_os = "linux")]
 pub mod fs;
 mod mmio;
 mod queue;
+#[cfg(target_os = "linux")]
 pub mod vsock;
 
 pub use self::balloon::*;
 pub use self::console::*;
 pub use self::device::*;
+#[cfg(target_os = "linux")]
 pub use self::fs::*;
 pub use self::mmio::*;
 pub use self::queue::*;
+#[cfg(target_os = "linux")]
 pub use self::vsock::*;
 
 /// When the driver initializes the device, it lets the device know about the

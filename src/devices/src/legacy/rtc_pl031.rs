@@ -15,7 +15,6 @@ use std::time::Instant;
 use std::{io, result};
 
 use crate::BusDevice;
-use logger::{Metric, METRICS};
 use utils::byte_order;
 use utils::eventfd::EventFd;
 //use bus::Error;
@@ -104,7 +103,6 @@ impl RTC {
                 // section of a motherboard's BIOS setup. This is functionality that extends beyond
                 // Firecracker intended use. However, we increment a metric just in case.
                 self.match_value = val;
-                METRICS.rtc.missed_write_count.inc();
             }
             RTCLR => {
                 self.load = val;
@@ -144,7 +142,6 @@ impl BusDevice for RTC {
             v = match offset {
                 RTCDR => self.get_time(),
                 RTCMR => {
-                    METRICS.rtc.missed_read_count.inc();
                     // Even though we are not implementing RTC alarm we return the last value
                     self.match_value
                 }
@@ -167,7 +164,6 @@ impl BusDevice for RTC {
                 offset,
                 data.len()
             );
-            METRICS.rtc.error_count.inc();
         }
     }
 
@@ -176,7 +172,6 @@ impl BusDevice for RTC {
             let v = byte_order::read_le_u32(&data[..]);
             if let Err(e) = self.handle_write(offset, v) {
                 warn!("Failed to write to RTC PL031 device: {}", e);
-                METRICS.rtc.error_count.inc();
             }
         } else {
             warn!(
@@ -184,7 +179,6 @@ impl BusDevice for RTC {
                 offset,
                 data.len()
             );
-            METRICS.rtc.error_count.inc();
         }
     }
 }
@@ -195,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_rtc_read_write_and_event() {
-        let mut rtc = RTC::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
+        let mut rtc = RTC::new(EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap());
         let mut data = [0; 4];
 
         // Read and write to the MR register.

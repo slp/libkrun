@@ -11,6 +11,7 @@ use libc::O_NONBLOCK;
 /// Wrapper for configuring the microVM boot source.
 pub mod boot_source;
 /// Wrapper for configuring the Fs devices attached to the microVM.
+#[cfg(target_os = "linux")]
 pub mod fs;
 /// Wrapper over the microVM general information attached to the microVM.
 pub mod instance_info;
@@ -21,6 +22,7 @@ pub mod logger;
 /// Wrapper for configuring the memory and CPU of the microVM.
 pub mod machine_config;
 /// Wrapper for configuring the vsock devices attached to the microVM.
+#[cfg(target_os = "linux")]
 pub mod vsock;
 
 type Result<T> = std::result::Result<T, std::io::Error>;

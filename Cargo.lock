@@ -72,6 +72,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kqueue"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c0e6b8030328adf14f23759fb6bb5d2feb9b89e6c5c6d7864439955f4b321bd"
+dependencies = [
+ "kqueue-sys",
+ "libc",
+]
+
+[[package]]
+name = "kqueue-sys"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9803ae382091c10a5c7297ffb9fde284dbc9662b249f86eacef605d97ae92d99"
+dependencies = [
+ "bitflags",
+ "libc",
+]
+
+[[package]]
 name = "kvm-bindings"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -99,13 +119,13 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.69"
+version = "0.2.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99e85c08494b21a9054e7fe1374a732aeadaff3980b6990b94bfd3a70f690005"
+checksum = "1482821306169ec4d07f6aca392a4681f66c75c9918aa49641a2595db64053cb"
 
 [[package]]
 name = "libkrun"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
  "libc",
@@ -154,6 +174,7 @@ name = "utils"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "kqueue",
  "libc",
  "vmm-sys-util",
 ]
@@ -191,9 +212,9 @@ dependencies = [
 
 [[package]]
 name = "vmm-sys-util"
-version = "0.5.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6cc7e1659e545d250261676c9193732da57357cc610b12a0e7c776ed047fc9"
+checksum = "d1cdd1d72e262bbfb014de65ada24c1ac50e10a2e3b1e8ec052df188c2ee5dfa"
 dependencies = [
  "bitflags",
  "libc",

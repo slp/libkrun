@@ -14,17 +14,23 @@ use super::{Error, Vmm};
 use device_manager::legacy::PortIODeviceManager;
 use device_manager::mmio::MMIODeviceManager;
 use devices::legacy::Serial;
-use devices::virtio::{MmioTransport, Vsock, VsockUnixBackend};
+use devices::virtio::MmioTransport;
+#[cfg(target_os = "linux")]
+use devices::virtio::{Vsock, VsockUnixBackend};
 
 use polly::event_manager::{Error as EventManagerError, EventManager};
+#[cfg(target_os = "linux")]
 use signal_handler::register_sigwinch_handler;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
 use vm_memory::{mmap::GuestRegionMmap, mmap::MmapRegion, GuestAddress, GuestMemoryMmap};
 use vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
+#[cfg(target_os = "linux")]
 use vmm_config::fs::FsBuilder;
-use vstate::{KvmContext, Vcpu, VcpuConfig, Vm};
+#[cfg(target_os = "linux")]
+use vstate::KvmContext;
+use vstate::{Vcpu, VcpuConfig, Vm};
 use {device_manager, VmmEventsObserver};
 
 /// Errors associated with starting the instance.
@@ -67,6 +73,7 @@ pub enum StartMicrovmError {
     /// Cannot initialize a MMIO Fs Device or add ad device to the MMIO Bus.
     RegisterFsDevice(device_manager::mmio::Error),
     /// Cannot register SIGWINCH event file descriptor.
+    #[cfg(target_os = "linux")]
     RegisterFsSigwinch(kvm_ioctls::Error),
     /// Cannot initialize a MMIO Network Device or add a device to the MMIO Bus.
     RegisterNetDevice(device_manager::mmio::Error),
@@ -161,6 +168,7 @@ impl Display for StartMicrovmError {
                     err_msg
                 )
             }
+            #[cfg(target_os = "linux")]
             RegisterFsSigwinch(ref err) => {
                 let mut err_msg = format!("{}", err);
                 err_msg = err_msg.replace("\"", "");
@@ -281,13 +289,12 @@ pub fn build_microvm(
         None => kernel_cmdline.insert_str(DEFAULT_KERNEL_CMDLINE).unwrap(),
         Some(s) => kernel_cmdline.insert_str(s).unwrap(),
     };
-    let mut vm = setup_kvm_vm(&guest_memory)?;
+    let mut vm = setup_vm(&guest_memory)?;
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    /*
     let serial_device = if cfg!(target_arch = "x86_64")
-        || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
+        || (cfg!(target_arch = "aarch64")/*&& kernel_cmdline.as_str().contains("console=")*/)
     {
         Some(setup_serial_device(
             event_manager,
@@ -297,10 +304,8 @@ pub fn build_microvm(
     } else {
         None
     };
-     */
-    let serial_device = None;
 
-    let exit_evt = EventFd::new(libc::EFD_NONBLOCK)
+    let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
         .map_err(StartMicrovmError::Internal)?;
 
@@ -356,7 +361,7 @@ pub fn build_microvm(
             &vm,
             &vcpu_config,
             &guest_memory,
-            GuestAddress(kernel.guest_addr),
+            GuestAddress(kernel_bundle.guest_addr),
             request_ts,
             &exit_evt,
         )
@@ -385,7 +390,9 @@ pub fn build_microvm(
 
     attach_balloon_device(&mut vmm, event_manager)?;
     attach_console_devices(&mut vmm, event_manager)?;
+    #[cfg(target_os = "linux")]
     attach_fs_devices(&mut vmm, &vm_resources.fs, event_manager)?;
+    #[cfg(target_os = "linux")]
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager)?;
     }
@@ -444,7 +451,8 @@ fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
     .map_err(StartMicrovmError::LoadCommandline)
 }
 
-pub(crate) fn setup_kvm_vm(
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     let kvm = KvmContext::new()
@@ -454,6 +462,16 @@ pub(crate) fn setup_kvm_vm(
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
     vm.memory_init(&guest_memory, kvm.max_memslots())
+        .map_err(Error::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    Ok(vm)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn setup_vm(
+    guest_memory: &GuestMemoryMmap,
+) -> std::result::Result<Vm, StartMicrovmError> {
+    let mut vm = Vm::new()
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
     Ok(vm)
@@ -484,7 +502,7 @@ pub fn setup_serial_device(
     input: Box<dyn devices::legacy::ReadableFd + Send>,
     out: Box<dyn io::Write + Send>,
 ) -> std::result::Result<Arc<Mutex<Serial>>, StartMicrovmError> {
-    let interrupt_evt = EventFd::new(libc::EFD_NONBLOCK)
+    let interrupt_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
         .map_err(StartMicrovmError::Internal)?;
     let serial = Arc::new(Mutex::new(Serial::new_in_out(interrupt_evt, input, out)));
@@ -537,13 +555,13 @@ fn attach_legacy_devices(
 ) -> std::result::Result<(), StartMicrovmError> {
     if let Some(serial) = serial {
         mmio_device_manager
-            .register_mmio_serial(vm.fd(), kernel_cmdline, serial)
+            .register_mmio_serial(vm, kernel_cmdline, serial)
             .map_err(Error::RegisterMMIODevice)
             .map_err(StartMicrovmError::Internal)?;
     }
 
     mmio_device_manager
-        .register_mmio_rtc(vm.fd())
+        .register_mmio_rtc(vm)
         .map_err(Error::RegisterMMIODevice)
         .map_err(StartMicrovmError::Internal)?;
 
@@ -594,13 +612,13 @@ fn create_vcpus_aarch64(
     for cpu_index in 0..vcpu_config.vcpu_count {
         let mut vcpu = Vcpu::new_aarch64(
             cpu_index,
-            vm.fd(),
+            vm,
             exit_evt.try_clone().map_err(Error::EventFd)?,
             request_ts.clone(),
         )
         .map_err(Error::Vcpu)?;
 
-        vcpu.configure_aarch64(vm.fd(), guest_mem, entry_addr)
+        vcpu.configure_aarch64(vm, guest_mem, entry_addr)
             .map_err(Error::Vcpu)?;
 
         vcpus.push(vcpu);
@@ -621,6 +639,7 @@ fn attach_mmio_device(
         .device_type();
     let cmdline = &mut vmm.kernel_cmdline;
 
+    #[cfg(target_arch = "x86_64")]
     let (_mmio_base, _irq) =
         vmm.mmio_device_manager
             .register_mmio_device(vmm.vm.fd(), device, type_id, id)?;
@@ -631,6 +650,7 @@ fn attach_mmio_device(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn attach_fs_devices(
     vmm: &mut Vmm,
     fs_devs: &FsBuilder,
@@ -686,12 +706,14 @@ fn attach_console_devices(
     )
     .map_err(RegisterFsDevice)?;
 
+    #[cfg(target_os = "linux")]
     register_sigwinch_handler(console.lock().unwrap().get_sigwinch_fd())
         .map_err(RegisterFsSigwinch)?;
 
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,
@@ -748,7 +770,9 @@ pub mod tests {
     use polly::event_manager::EventManager;
     use utils::tempfile::TempFile;
     use vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
+    #[cfg(target_os = "linux")]
     use vmm_config::vsock::tests::{default_config, TempSockFile};
+    #[cfg(target_os = "linux")]
     use vmm_config::vsock::VsockBuilder;
 
     fn default_mmio_device_manager() -> MMIODeviceManager {
@@ -762,9 +786,9 @@ pub mod tests {
     fn default_portio_device_manager() -> PortIODeviceManager {
         PortIODeviceManager::new(
             Some(Arc::new(Mutex::new(Serial::new_sink(
-                EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+                EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap(),
             )))),
-            EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap(),
         )
         .unwrap()
     }
@@ -793,7 +817,7 @@ pub mod tests {
         let guest_memory = default_guest_memory(128).unwrap();
         let kernel_cmdline = default_kernel_cmdline();
 
-        let exit_evt = EventFd::new(libc::EFD_NONBLOCK)
+        let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
             .map_err(Error::EventFd)
             .map_err(StartMicrovmError::Internal)
             .unwrap();
@@ -846,7 +870,7 @@ pub mod tests {
             entry_addr,
             TimestampUs::default(),
             &bus,
-            &EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            &EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap(),
         )
         .unwrap();
         assert_eq!(vcpu_vec.len(), vcpu_count as usize);
@@ -873,7 +897,7 @@ pub mod tests {
             &guest_memory,
             entry_addr,
             TimestampUs::default(),
-            &EventFd::new(libc::EFD_NONBLOCK).unwrap(),
+            &EventFd::new(utils::eventfd::EFD_NONBLOCK).unwrap(),
         )
         .unwrap();
         assert_eq!(vcpu_vec.len(), vcpu_count as usize);

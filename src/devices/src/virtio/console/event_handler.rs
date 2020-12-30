@@ -50,7 +50,7 @@ impl Console {
 
         let event_set = event.event_set();
         match event_set {
-            EventSet::HANG_UP => process::exit(0),
+            //EventSet::HANG_UP => process::exit(0),
             EventSet::IN => {}
             _ => {
                 warn!("console: input unexpected event {:?}", event_set);

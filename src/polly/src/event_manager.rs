@@ -70,11 +70,13 @@ pub struct EventManager {
     ready_events: Vec<EpollEvent>,
 }
 
+/*
 impl AsRawFd for EventManager {
     fn as_raw_fd(&self) -> RawFd {
         self.epoll.as_raw_fd()
     }
 }
+*/
 
 impl EventManager {
     const EVENT_BUFFER_SIZE: usize = 128;
