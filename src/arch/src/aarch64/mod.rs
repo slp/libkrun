@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod fdt;
-/// Module for the global interrupt controller configuration.
-pub mod gic;
-mod gicv2;
-mod gicv3;
 /// Layout for this aarch64 system.
 pub mod layout;
-/// Logic for configuring aarch64 registers.
-pub mod regs;
+
+/// Module for the global interrupt controller configuration.
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+use self::linux::*;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+use self::macos::*;
 
 use std::cmp::min;
 use std::collections::HashMap;
