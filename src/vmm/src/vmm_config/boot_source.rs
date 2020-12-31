@@ -16,8 +16,11 @@ use std::fmt::{Display, Formatter, Result};
 //pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0 \
 //                                          i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd";
 
+//pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 pci=off nomodules \
+//                                          console=hvc0 rootfstype=virtiofs rw quiet";
+
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 pci=off nomodules \
-                                          console=hvc0 rootfstype=virtiofs rw quiet";
+                                          console=hvc0 rootfstype=virtiofs rw";
 
 //pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules earlyprintk=ttyS0 \
 //                                          console=ttyS0";

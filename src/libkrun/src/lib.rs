@@ -17,9 +17,11 @@ use once_cell::sync::Lazy;
 use polly::event_manager::EventManager;
 use vmm::resources::VmResources;
 use vmm::vmm_config::boot_source::{BootSourceConfig, DEFAULT_KERNEL_CMDLINE};
+#[cfg(target_os = "linux")]
 use vmm::vmm_config::fs::FsDeviceConfig;
 use vmm::vmm_config::kernel_bundle::KernelBundle;
 use vmm::vmm_config::machine_config::VmConfig;
+#[cfg(target_os = "linux")]
 use vmm::vmm_config::vsock::VsockDeviceConfig;
 
 // Minimum krunfw version we require.
@@ -124,6 +126,9 @@ pub extern "C" fn krun_set_log_level(level: u32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn krun_create_ctx() -> i32 {
+    // Safe because this call just returns the page size and doesn't have any side effects.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+
     let krunfw_version = unsafe { krunfw_get_version() };
     if krunfw_version < KRUNFW_MIN_VERSION {
         warn!("Unsupported libkrunfw version: {}", krunfw_version);
@@ -139,6 +144,10 @@ pub extern "C" fn krun_create_ctx() -> i32 {
         )
     };
 
+    if kernel_size & (page_size - 1) != 0 {
+        kernel_size = ((kernel_size / page_size) + 1) * page_size;
+    }
+
     let mut ctx_cfg = ContextConfig::default();
 
     let kernel_bundle = KernelBundle {
@@ -148,11 +157,13 @@ pub extern "C" fn krun_create_ctx() -> i32 {
     };
     ctx_cfg.vmr.set_kernel_bundle(kernel_bundle).unwrap();
 
+    #[cfg(target_os = "linux")]
     let vsock_device_config = VsockDeviceConfig {
         vsock_id: "vsock0".to_string(),
         guest_cid: 3,
         uds_path: "/tmp/vsock0".to_string(),
     };
+    #[cfg(target_os = "linux")]
     ctx_cfg.vmr.set_vsock_device(vsock_device_config).unwrap();
 
     let ctx_id = CTX_IDS.fetch_add(1, Ordering::SeqCst);
@@ -210,11 +221,13 @@ pub unsafe extern "C" fn krun_set_root(ctx_id: u32, c_root_path: *const c_char) 
         Err(_) => return -libc::EINVAL,
     };
 
+    #[cfg(target_os = "linux")]
     let fs_device_config = FsDeviceConfig {
         fs_id: "/dev/root".to_string(),
         shared_dir: root_path.to_string(),
     };
 
+    #[cfg(target_os = "linux")]
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
         Entry::Occupied(mut ctx_cfg) => {
             if ctx_cfg
@@ -328,7 +341,10 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         Ok(val) => CString::new(format!("VM:{}", val)).unwrap(),
         Err(_) => CString::new("libkrun VM").unwrap(),
     };
-    unsafe { libc::prctl(libc::PR_SET_NAME, prname.as_ptr()) };
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_NAME, prname.as_ptr())
+    };
 
     let mut event_manager = match EventManager::new() {
         Ok(em) => em,

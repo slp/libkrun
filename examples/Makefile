@@ -1,5 +1,5 @@
-LDFLAGS = -lkrun
-CFLAGS = -O2 -g
+LDFLAGS = -L/opt/local/lib -lkrun
+CFLAGS = -O2 -g -I/opt/local/include
 
 .PHONY: clean
 

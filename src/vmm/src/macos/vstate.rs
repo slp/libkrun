@@ -7,6 +7,7 @@
 
 use libc::{c_int, c_void, siginfo_t};
 use std::cell::Cell;
+use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::result;
@@ -20,10 +21,13 @@ use super::super::TimestampUs;
 use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
 use super::bindings::{
     hv_reg_t_HV_REG_CPSR, hv_reg_t_HV_REG_PC, hv_reg_t_HV_REG_X0, hv_vcpu_create, hv_vcpu_exit_t,
-    hv_vcpu_get_reg, hv_vcpu_set_reg, hv_vcpu_t, hv_vm_create, hv_vm_map, HV_MEMORY_EXEC,
-    HV_MEMORY_READ, HV_MEMORY_WRITE,
+    hv_vcpu_get_reg, hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_t, hv_vm_create, hv_vm_map,
+    HV_MEMORY_EXEC, HV_MEMORY_READ, HV_MEMORY_WRITE,
 };
-use super::hvf::{hv_call, PSTATE_FAULT_BITS_64};
+use super::hvf::{
+    hv_call, EC_AA64_BKPT, EC_AA64_HVC, EC_AA64_SMC, EC_DATAABORT, EC_SVEACCESSTRAP,
+    EC_SYSTEMREGISTERTRAP, PSTATE_FAULT_BITS_64, SYSREG_MASK,
+};
 
 use arch;
 use arch::aarch64::gic::GICDevice;
@@ -155,19 +159,17 @@ impl Vm {
     }
 
     /// Initializes the guest memory.
-    pub fn memory_init(
-        &mut self,
-        guest_mem: &GuestMemoryMmap,
-        kvm_max_memslots: usize,
-    ) -> Result<()> {
-        if guest_mem.num_regions() > kvm_max_memslots {
-            return Err(Error::NotEnoughMemorySlots);
-        }
+    pub fn memory_init(&mut self, guest_mem: &GuestMemoryMmap) -> Result<()> {
         guest_mem
             .with_regions(|index, region| {
                 // It's safe to unwrap because the guest address is valid.
                 let host_addr = guest_mem.get_host_address(region.start_addr()).unwrap();
-                info!("Guest memory starts at {:x?}", host_addr);
+                println!(
+                    "Guest memory host_addr={:x?} guest_addr={:x?} len={:x?}",
+                    host_addr,
+                    region.start_addr().raw_value(),
+                    region.len()
+                );
 
                 guest_mem.with_regions(|_, region| unsafe {
                     hv_call(hv_vm_map(
@@ -207,14 +209,74 @@ pub struct VcpuConfig {
     pub cpu_template: Option<CpuFeaturesTemplate>,
 }
 
+struct HvfVcpu<'a> {
+    vcpuid: hv_vcpu_t,
+    vcpu_exit: &'a hv_vcpu_exit_t,
+}
+
+impl<'a> HvfVcpu<'a> {
+    unsafe fn new(entry_addr: GuestAddress, fdt_addr: u64) -> Self {
+        let mut vcpuid: hv_vcpu_t = 0;
+        let vcpu_exit_ptr: *mut hv_vcpu_exit_t = std::ptr::null_mut();
+
+        hv_call(hv_vcpu_create(
+            &mut vcpuid,
+            &vcpu_exit_ptr as *const _ as *mut *mut _,
+            std::ptr::null_mut(),
+        ))
+        .unwrap();
+        println!("vcpu_exit: {:?}", vcpu_exit_ptr);
+        hv_call(hv_vcpu_set_reg(
+            vcpuid,
+            hv_reg_t_HV_REG_CPSR,
+            PSTATE_FAULT_BITS_64,
+        ))
+        .unwrap();
+        hv_call(hv_vcpu_set_reg(
+            vcpuid,
+            hv_reg_t_HV_REG_PC,
+            entry_addr.raw_value(),
+        ))
+        .unwrap();
+        hv_call(hv_vcpu_set_reg(vcpuid, hv_reg_t_HV_REG_X0, fdt_addr)).unwrap();
+
+        let pc: u64 = 0;
+        hv_call(hv_vcpu_get_reg(
+            vcpuid,
+            hv_reg_t_HV_REG_PC,
+            &pc as *const _ as *mut _,
+        ))
+        .unwrap();
+        println!("pc is {:x}", pc);
+
+        /*
+        hv_call(hv_vcpu_set_sys_reg(
+            vcpuid,
+            hv_sys_reg_t_HV_SYS_REG_SP_EL0,
+            MAIN_MEMORY + 0x4000,
+        ))?;
+        hv_call(hv_vcpu_set_sys_reg(
+            vcpuid,
+            hv_sys_reg_t_HV_SYS_REG_SP_EL1,
+            MAIN_MEMORY + 0x8000,
+        ))?;
+         */
+
+        //hv_call(hv_vcpu_set_trap_debug_exceptions(vcpuid, true))?;
+
+        let vcpu_exit: &hv_vcpu_exit_t = vcpu_exit_ptr.as_mut().unwrap();
+
+        Self { vcpuid, vcpu_exit }
+    }
+}
+
 // Using this for easier explicit type-casting to help IDEs interpret the code.
 type VcpuCell = Cell<Option<*const Vcpu>>;
 
 /// A wrapper around creating and using a kvm-based VCPU.
 pub struct Vcpu {
     id: u8,
-    vcpuid: hv_vcpu_t,
-    vcpu_exit_addr: u64,
+    fdt_addr: u64,
     create_ts: TimestampUs,
     mmio_bus: Option<devices::Bus>,
     #[cfg_attr(all(test, target_arch = "aarch64"), allow(unused))]
@@ -330,12 +392,13 @@ impl Vcpu {
         exit_evt: EventFd,
         create_ts: TimestampUs,
     ) -> Result<Self> {
-        let mut vcpuid: hv_vcpu_t = 0;
-        let vcpu_exit_ptr: *mut hv_vcpu_exit_t = std::ptr::null_mut();
+        //let mut vcpuid: hv_vcpu_t = 0;
+        //let vcpu_exit_ptr: *mut hv_vcpu_exit_t = std::ptr::null_mut();
 
         let (event_sender, event_receiver) = channel();
         let (response_sender, response_receiver) = channel();
 
+        /*
         unsafe {
             hv_call(hv_vcpu_create(
                 &mut vcpuid,
@@ -344,11 +407,11 @@ impl Vcpu {
             ))
             .unwrap();
         }
+        */
 
         Ok(Vcpu {
             id,
-            vcpuid,
-            vcpu_exit_addr: vcpu_exit_ptr as u64,
+            fdt_addr: 0,
             create_ts,
             mmio_bus: None,
             exit_evt,
@@ -388,12 +451,13 @@ impl Vcpu {
         guest_mem: &GuestMemoryMmap,
         kernel_load_addr: GuestAddress,
     ) -> Result<()> {
+        self.mpidr = 0x410fd083;
         /*
         arch::aarch64::regs::setup_regs(self.id, kernel_load_addr.raw_value(), guest_mem)
             .map_err(Error::REGSConfiguration)?;
 
         self.mpidr = arch::aarch64::regs::read_mpidr().map_err(Error::REGSConfiguration)?;
-         */
+
         unsafe {
             hv_call(hv_vcpu_set_reg(
                 self.vcpuid,
@@ -422,6 +486,8 @@ impl Vcpu {
             ))
             .unwrap();
         }
+         */
+        self.fdt_addr = arch::aarch64::get_fdt_addr(guest_mem);
 
         Ok(())
     }
@@ -441,6 +507,9 @@ impl Vcpu {
                 init_tls_sender
                     .send(true)
                     .expect("Cannot notify vcpu TLS initialization.");
+
+                //self.hvf_vcpu =
+                //    Some(unsafe { HvfVcpu::new(GuestAddress(0x80000000), self.fdt_addr) });
 
                 self.run();
             })
@@ -468,7 +537,179 @@ impl Vcpu {
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
-    fn run_emulation(&mut self) -> Result<VcpuEmulation> {
+    fn run_emulation(&mut self, vcpu: &HvfVcpu) -> Result<VcpuEmulation> {
+        //let vcpu = self.hvf_vcpu.as_ref().unwrap();
+        //let vcpu_exit: &hv_vcpu_exit_t =
+        //   unsafe { (vcpu.vcpu_exit_addr as *mut _).as_mut().unwrap() };
+        //println!("vcpu_exit2: {:?}", vcpu_exit);
+        let vcpu_exit = vcpu.vcpu_exit;
+
+        hv_call(unsafe { hv_vcpu_run(vcpu.vcpuid) }).unwrap();
+        match vcpu_exit.reason {
+            hv_exit_reason_t_HV_EXIT_REASON_EXCEPTION => {
+                let pc: u64 = 0;
+                hv_call(unsafe {
+                    hv_vcpu_get_reg(vcpu.vcpuid, hv_reg_t_HV_REG_PC, &pc as *const _ as *mut _)
+                })
+                .unwrap();
+                //println!("exception with pc at 0x{:x}", pc);
+
+                let syndrome = vcpu_exit.exception.syndrome;
+                let ec = (syndrome >> 26) & 0x3f;
+
+                let mut advance_pc = false;
+                match ec {
+                    EC_AA64_HVC => println!("HVC call"),
+                    EC_AA64_SMC => {
+                        println!("SMC call");
+                        advance_pc = true;
+                    }
+                    EC_SYSTEMREGISTERTRAP => {
+                        let isread: bool = ((syndrome >> 0) & 1) != 0;
+                        let rt: u32 = ((syndrome >> 5) & 0x1f) as u32;
+                        let reg: u64 = syndrome & SYSREG_MASK;
+
+                        println!("sysreg operation reg={} (op0={} op1={} op2={} crn={} crm={}) isread={:?}",
+                                     reg, (reg >> 20) & 0x3,
+                                     (reg >> 14) & 0x7, (reg >> 17) & 0x7,
+                                     (reg >> 10) & 0xf, (reg >> 1) & 0xf,
+                                     isread);
+
+                        if isread {
+                            //let val: u64 = 0;
+                            //self.read_sys_reg(reg);
+                            //hv_call(hv_vcpu_set_reg(self.vcpuid, rt, val))?;
+                        } else {
+                            //let val: u64 = 0;
+                            //hv_call(hv_vcpu_get_reg(vcpu.vcpuid, rt, &val as *const _ as *mut _))?;
+                            //self.write_sys_reg(reg);
+                            //hv_call(hv_vcpu_set_sys_reg(self.vcpuid, reg as u16, val))?;
+                        }
+
+                        advance_pc = true;
+                    }
+                    EC_DATAABORT => {
+                        let isv: bool = (syndrome & (1 << 24)) != 0;
+                        let iswrite: bool = ((syndrome >> 6) & 1) != 0;
+                        let s1ptw: bool = ((syndrome >> 7) & 1) != 0;
+                        let sas: u32 = (syndrome as u32 >> 22) & 3;
+                        let len: usize = (1 << sas) as usize;
+                        let srt: u32 = (syndrome as u32 >> 16) & 0x1f;
+
+                        if vcpu_exit.exception.physical_address > 0x40004000
+                            && vcpu_exit.exception.physical_address < 0x40005000
+                        {
+                            //println!("data abort: pc={:x} va={:x}, pa={:x}, isv={}, iswrite={:?}, s1ptrw={}, len={}, srt={}", pc, vcpu_exit.exception.virtual_address, vcpu_exit.exception.physical_address, isv, iswrite, s1ptw, len, srt);
+                        }
+
+                        let pa = vcpu_exit.exception.physical_address;
+                        if iswrite {
+                            let val: u64 = 0;
+                            if srt < 31 {
+                                hv_call(unsafe {
+                                    hv_vcpu_get_reg(
+                                        vcpu.vcpuid,
+                                        hv_reg_t_HV_REG_X0 + srt,
+                                        &val as *const _ as *mut _,
+                                    )
+                                })
+                                .unwrap();
+                            }
+
+                            if let Some(ref mmio_bus) = self.mmio_bus {
+                                match len {
+                                    1 => {
+                                        let data = (val as u8).to_le_bytes();
+                                        mmio_bus.write(pa, &data);
+                                    }
+                                    4 => {
+                                        let data = (val as u32).to_le_bytes();
+                                        mmio_bus.write(pa, &data);
+                                    }
+                                    8 => {
+                                        let data = (val as u64).to_le_bytes();
+                                        mmio_bus.write(pa, &data);
+                                    }
+                                    _ => panic!("unsupported mmio len={}", len),
+                                };
+                            } else {
+                                println!("no mmio_bus");
+                            }
+
+                            //if self.uart.is_owner(pa) {
+                            //    self.uart.handle_write(pa, val);
+                            //} else if self.gic.is_owner(pa) {
+                            //    self.gic.handle_write(pa, val);
+                            //} else {
+                            //println!("write to unhandled address={:x}", pa);
+                            //}
+                        } else {
+                            if let Some(ref mmio_bus) = self.mmio_bus {
+                                let val: u64 = match len {
+                                    1 => {
+                                        let mut data: [u8; 1] = [0; 1];
+                                        mmio_bus.read(pa, &mut data);
+                                        u8::from_le_bytes(data) as u64
+                                    }
+                                    4 => {
+                                        let mut data: [u8; 4] = [0; 4];
+                                        mmio_bus.read(pa, &mut data);
+                                        u32::from_le_bytes(data) as u64
+                                    }
+                                    8 => {
+                                        let mut data: [u8; 8] = [0; 8];
+                                        mmio_bus.read(pa, &mut data);
+                                        u64::from_le_bytes(data) as u64
+                                    }
+                                    _ => panic!("unsupported mmio len={}", len),
+                                };
+                                if srt < 31 {
+                                    hv_call(unsafe {
+                                        hv_vcpu_set_reg(vcpu.vcpuid, hv_reg_t_HV_REG_X0 + srt, val)
+                                    })
+                                    .unwrap();
+                                }
+                            } else {
+                                println!("no mmio_bus");
+                            }
+                            //let val = if self.uart.is_owner(pa) {
+                            //    self.uart.handle_read(pa)
+                            //} else {
+                            //println!("read from unhandled address={:x}", pa);
+                            //    0
+                            //};
+                            //hv_call(hv_vcpu_set_reg(self.vcpuid, hv_reg_t_HV_REG_X0 + srt, val))?;
+                        }
+
+                        advance_pc = true;
+                    }
+                    EC_AA64_BKPT => {
+                        println!("BRK call");
+                    }
+                    _ => panic!("unexpected exception: 0x{:x}", ec),
+                }
+
+                if advance_pc {
+                    let pc: u64 = 0;
+                    hv_call(unsafe {
+                        hv_vcpu_get_reg(vcpu.vcpuid, hv_reg_t_HV_REG_PC, &pc as *const _ as *mut _)
+                    })
+                    .unwrap();
+                    hv_call(unsafe { hv_vcpu_set_reg(vcpu.vcpuid, hv_reg_t_HV_REG_PC, pc + 4) })
+                        .unwrap();
+                }
+            }
+
+            _ => {
+                let pc: u64 = 0;
+                hv_call(unsafe {
+                    hv_vcpu_get_reg(vcpu.vcpuid, hv_reg_t_HV_REG_PC, &pc as *const _ as *mut _)
+                })
+                .unwrap();
+
+                println!("unexpected exit reason: pc=0x{:x}", pc);
+            }
+        }
         Ok(VcpuEmulation::Handled)
     }
 
@@ -486,8 +727,9 @@ impl Vcpu {
     fn running(&mut self) -> StateMachine<Self> {
         // This loop is here just for optimizing the emulation path.
         // No point in ticking the state machine if there are no external events.
+        let vcpu = unsafe { HvfVcpu::new(GuestAddress(0x80000000), self.fdt_addr) };
         loop {
-            match self.run_emulation() {
+            match self.run_emulation(&vcpu) {
                 // Emulation ran successfully, continue.
                 Ok(VcpuEmulation::Handled) => (),
                 // Emulation was interrupted, check external events.

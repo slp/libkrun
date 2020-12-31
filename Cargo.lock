@@ -74,8 +74,6 @@ dependencies = [
 [[package]]
 name = "kqueue"
 version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c0e6b8030328adf14f23759fb6bb5d2feb9b89e6c5c6d7864439955f4b321bd"
 dependencies = [
  "kqueue-sys",
  "libc",

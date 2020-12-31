@@ -42,8 +42,8 @@ use DeviceType;
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
 pub fn arch_memory_regions(
     size: usize,
-    _kernel_load_addr: u64,
-    _kernel_size: usize,
+    kernel_load_addr: u64,
+    kernel_size: usize,
 ) -> Vec<(GuestAddress, usize)> {
     let dram_size = min(size as u64, layout::DRAM_MEM_MAX_SIZE) as usize;
     vec![(GuestAddress(layout::DRAM_MEM_START), dram_size)]
@@ -102,7 +102,7 @@ pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> supe
 }
 
 // Auxiliary function to get the address where the device tree blob is loaded.
-fn get_fdt_addr(mem: &GuestMemoryMmap) -> u64 {
+pub fn get_fdt_addr(mem: &GuestMemoryMmap) -> u64 {
     // If the memory allocated is smaller than the size allocated for the FDT,
     // we return the start of the DRAM so that
     // we allow the code to try and load the FDT.

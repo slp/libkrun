@@ -24,7 +24,7 @@ use signal_handler::register_sigwinch_handler;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
-use vm_memory::{mmap::GuestRegionMmap, mmap::MmapRegion, GuestAddress, GuestMemoryMmap};
+use vm_memory::{mmap::GuestRegionMmap, mmap::MmapRegion, Bytes, GuestAddress, GuestMemoryMmap};
 use vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
 #[cfg(target_os = "linux")]
 use vmm_config::fs::FsBuilder;
@@ -266,17 +266,17 @@ pub fn build_microvm(
     let kernel_bundle = vm_resources
         .kernel_bundle()
         .ok_or(StartMicrovmError::MissingKernelConfig)?;
-    let kernel_region = unsafe {
-        MmapRegion::build_raw(kernel_bundle.host_addr as *mut u8, kernel_bundle.size, 0, 0)
-            .map_err(StartMicrovmError::KernelBundle)?
-    };
+    //let kernel_region = unsafe {
+    //    MmapRegion::build_raw(kernel_bundle.host_addr as *mut u8, kernel_bundle.size, 0, 0)
+    //        .map_err(StartMicrovmError::KernelBundle)?
+    //};
 
     let guest_memory = create_guest_memory(
         vm_resources
             .vm_config()
             .mem_size_mib
             .ok_or(StartMicrovmError::MissingMemSizeConfig)?,
-        kernel_region,
+        kernel_bundle.host_addr,
         kernel_bundle.guest_addr,
         kernel_bundle.size,
     )?;
@@ -388,8 +388,11 @@ pub fn build_microvm(
         pio_device_manager,
     };
 
+    println!("attaching balloon");
     attach_balloon_device(&mut vmm, event_manager)?;
+    //println!("attaching console");
     attach_console_devices(&mut vmm, event_manager)?;
+    //println!("done attaching console");
     #[cfg(target_os = "linux")]
     attach_fs_devices(&mut vmm, &vm_resources.fs, event_manager)?;
     #[cfg(target_os = "linux")]
@@ -406,37 +409,48 @@ pub fn build_microvm(
     #[cfg(target_arch = "x86_64")]
     load_cmdline(&vmm)?;
 
+    println!("system");
     vmm.configure_system(vcpus.as_slice(), &None)
         .map_err(StartMicrovmError::Internal)?;
+    println!("vcpus");
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
 
+    println!("vmm");
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
         .map_err(StartMicrovmError::RegisterEvent)?;
-
     Ok(vmm)
 }
 
 /// Creates GuestMemory of `mem_size_mib` MiB in size.
 pub fn create_guest_memory(
     mem_size_mib: usize,
-    kernel_region: MmapRegion,
-    kernel_load_addr: u64,
+    kernel_host_addr: u64,
+    kernel_guest_addr: u64,
     kernel_size: usize,
 ) -> std::result::Result<GuestMemoryMmap, StartMicrovmError> {
     let mem_size = mem_size_mib << 20;
-    let arch_mem_regions = arch::arch_memory_regions(mem_size, kernel_load_addr, kernel_size);
+    let arch_mem_regions = arch::arch_memory_regions(mem_size, kernel_guest_addr, kernel_size);
 
-    Ok(GuestMemoryMmap::from_ranges(&arch_mem_regions)
-        .and_then(|memory| {
-            memory.insert_region(Arc::new(GuestRegionMmap::new(
-                kernel_region,
-                GuestAddress(kernel_load_addr as u64),
-            )?))
-        })
-        .map_err(StartMicrovmError::GuestMemoryMmap)?)
+    let guest_mem = GuestMemoryMmap::from_ranges(&arch_mem_regions)
+        /*
+          .and_then(|memory| {
+              memory.insert_region(Arc::new(GuestRegionMmap::new(
+                  kernel_region,
+                  GuestAddress(kernel_load_addr as u64),
+              )?))
+          })
+        */
+        .map_err(StartMicrovmError::GuestMemoryMmap)?;
+
+    let kernel_data =
+        unsafe { std::slice::from_raw_parts(kernel_host_addr as *const _, kernel_size) };
+    guest_mem
+        .write(kernel_data, GuestAddress(kernel_guest_addr))
+        .unwrap();
+    Ok(guest_mem)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -472,6 +486,9 @@ pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     let mut vm = Vm::new()
+        .map_err(Error::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    vm.memory_init(&guest_memory)
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
     Ok(vm)
@@ -639,11 +656,11 @@ fn attach_mmio_device(
         .device_type();
     let cmdline = &mut vmm.kernel_cmdline;
 
-    #[cfg(target_arch = "x86_64")]
-    let (_mmio_base, _irq) =
-        vmm.mmio_device_manager
-            .register_mmio_device(vmm.vm.fd(), device, type_id, id)?;
-    #[cfg(target_arch = "x86_64")]
+    //#[cfg(target_arch = "x86_64")]
+    let (_mmio_base, _irq) = vmm
+        .mmio_device_manager
+        .register_mmio_device(/*vmm.vm.fd(),*/ device, type_id, id)?;
+    //#[cfg(target_arch = "x86_64")]
     vmm.mmio_device_manager
         .add_device_to_cmdline(cmdline, _mmio_base, _irq)?;
 
@@ -690,9 +707,9 @@ fn attach_console_devices(
 
     // Stdin may not be pollable (i.e. when running a container without "-i"). If that's
     // the case, disable the interactive mode in the console.
-    if !event_manager.is_pollable(io::stdin().as_raw_fd()) {
-        console.lock().unwrap().set_interactive(false)
-    }
+    //if !event_manager.is_pollable(io::stdin().as_raw_fd()) {
+    console.lock().unwrap().set_interactive(false);
+    //}
 
     event_manager
         .add_subscriber(console.clone())

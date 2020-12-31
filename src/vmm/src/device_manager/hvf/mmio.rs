@@ -140,7 +140,7 @@ impl MMIODeviceManager {
     }
 
     /// Append a registered MMIO device to the kernel cmdline.
-    #[cfg(target_arch = "x86_64")]
+    //#[cfg(target_arch = "x86_64")]
     pub fn add_device_to_cmdline(
         &mut self,
         cmdline: &mut kernel_cmdline::Cmdline,

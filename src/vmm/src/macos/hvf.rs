@@ -11,16 +11,16 @@ const PSR_D_BIT: u64 = 0x0000_0200;
 // Taken from arch/arm64/kvm/inject_fault.c.
 pub const PSTATE_FAULT_BITS_64: u64 = PSR_MODE_EL1h | PSR_A_BIT | PSR_F_BIT | PSR_I_BIT | PSR_D_BIT;
 
-const EC_AA64_HVC: u64 = 0x16;
-const EC_AA64_SMC: u64 = 0x17;
-const EC_SYSTEMREGISTERTRAP: u64 = 0x18;
-const EC_SVEACCESSTRAP: u64 = 0x19;
-const EC_DATAABORT: u64 = 0x24;
-const EC_AA64_BKPT: u64 = 0x3c;
+pub const EC_AA64_HVC: u64 = 0x16;
+pub const EC_AA64_SMC: u64 = 0x17;
+pub const EC_SYSTEMREGISTERTRAP: u64 = 0x18;
+pub const EC_SVEACCESSTRAP: u64 = 0x19;
+pub const EC_DATAABORT: u64 = 0x24;
+pub const EC_AA64_BKPT: u64 = 0x3c;
 
 macro_rules! arm64_sys_reg {
     ($name: tt, $op0: tt, $op1: tt, $op2: tt, $crn: tt, $crm: tt) => {
-        const $name: u64 = ($op0 as u64) << 20
+        pub const $name: u64 = ($op0 as u64) << 20
             | ($op2 as u64) << 17
             | ($op1 as u64) << 14
             | ($crn as u64) << 10

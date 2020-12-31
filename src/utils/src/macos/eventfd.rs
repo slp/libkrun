@@ -45,6 +45,7 @@ impl EventFd {
         } else {
             // This is safe because we checked ret for success and know
             // the kernel gave us an fd that we own.
+            println!("pipe: {:?} {:?}", fds[0], fds[1]);
             Ok(EventFd {
                 vmm_fd: fds[0],
                 device_fd: fds[1],
@@ -159,6 +160,7 @@ impl EventFd {
 
 impl AsRawFd for EventFd {
     fn as_raw_fd(&self) -> RawFd {
+        println!("device_fd: {:?}", self.device_fd);
         self.device_fd
     }
 }

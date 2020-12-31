@@ -148,6 +148,7 @@ impl Epoll {
                 }
             }
         }
+        self.enabled = false;
         Ok(())
     }
 
@@ -174,10 +175,13 @@ impl Epoll {
             self.enabled = true;
         }
 
-        match self
-            .watcher
-            .poll(Some(Duration::from_millis(timeout as u64)))
-        {
+        let tout = if timeout > 0 {
+            Some(Duration::from_millis(timeout as u64))
+        } else {
+            None
+        };
+
+        match self.watcher.poll(tout) {
             Some(event) => {
                 let fd = match event.ident {
                     Ident::Fd(fd) => fd,
