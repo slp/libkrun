@@ -10,6 +10,7 @@ use std::mem::size_of;
 
 use vm_memory::ByteValued;
 
+use super::bindings;
 use super::descriptor_utils::{Reader, Writer};
 use super::filesystem::{
     Context, DirEntry, Entry, FileSystem, GetxattrReply, ListxattrReply, ZeroCopyReader,
@@ -199,7 +200,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         let valid = SetattrValid::from_bits_truncate(setattr_in.valid);
 
-        let st: libc::stat64 = setattr_in.into();
+        let st: bindings::stat64 = setattr_in.into();
 
         match self.fs.setattr(
             Context::from(in_header),
@@ -409,7 +410,10 @@ impl<F: FileSystem + Sync> Server<F> {
     fn rename2(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let Rename2In { newdir, flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
+        #[cfg(target_os = "linux")]
         let flags = flags & (libc::RENAME_EXCHANGE | libc::RENAME_NOREPLACE) as u32;
+        #[cfg(target_os = "macos")]
+        let flags = flags & (libc::RENAME_SWAP | libc::RENAME_EXCL) as u32;
 
         self.do_rename(in_header, size_of::<Rename2In>(), newdir, flags, r, w)
     }
@@ -1249,6 +1253,7 @@ fn reply_ok<T: ByteValued>(
 }
 
 fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
+    let error = -e.raw_os_error().unwrap_or(libc::EIO);
     let header = OutHeader {
         len: size_of::<OutHeader>() as u32,
         error: -e.raw_os_error().unwrap_or(libc::EIO),

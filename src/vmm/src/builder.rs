@@ -13,7 +13,7 @@ use super::{Error, Vmm};
 #[cfg(target_arch = "x86_64")]
 use device_manager::legacy::PortIODeviceManager;
 use device_manager::mmio::MMIODeviceManager;
-use devices::legacy::Serial;
+use devices::legacy::{Gic, Serial};
 use devices::virtio::MmioTransport;
 #[cfg(target_os = "linux")]
 use devices::virtio::{Vsock, VsockUnixBackend};
@@ -26,7 +26,6 @@ use utils::terminal::Terminal;
 use utils::time::TimestampUs;
 use vm_memory::{mmap::GuestRegionMmap, mmap::MmapRegion, Bytes, GuestAddress, GuestMemoryMmap};
 use vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
-#[cfg(target_os = "linux")]
 use vmm_config::fs::FsBuilder;
 #[cfg(target_os = "linux")]
 use vstate::KvmContext;
@@ -291,6 +290,7 @@ pub fn build_microvm(
     };
     let mut vm = setup_vm(&guest_memory)?;
 
+    /*
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
     let serial_device = if cfg!(target_arch = "x86_64")
@@ -304,6 +304,8 @@ pub fn build_microvm(
     } else {
         None
     };
+     */
+    let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -330,6 +332,12 @@ pub fn build_microvm(
         &mut (arch::MMIO_MEM_START as u64),
         (arch::IRQ_BASE, arch::IRQ_MAX),
     );
+
+    let interrupt_controller = if cfg!(target_os = "macos") {
+        Some(Arc::new(Mutex::new(devices::legacy::Gic::new())))
+    } else {
+        None
+    };
 
     let vcpus;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
@@ -372,6 +380,7 @@ pub fn build_microvm(
             &vm,
             &mut mmio_device_manager,
             &mut kernel_cmdline,
+            interrupt_controller.clone(),
             serial_device,
         )?;
     }
@@ -388,16 +397,20 @@ pub fn build_microvm(
         pio_device_manager,
     };
 
-    println!("attaching balloon");
-    attach_balloon_device(&mut vmm, event_manager)?;
+    //println!("attaching balloon");
+    attach_balloon_device(&mut vmm, event_manager, interrupt_controller.clone())?;
     //println!("attaching console");
-    attach_console_devices(&mut vmm, event_manager)?;
+    attach_console_devices(&mut vmm, event_manager, interrupt_controller.clone())?;
     //println!("done attaching console");
-    #[cfg(target_os = "linux")]
-    attach_fs_devices(&mut vmm, &vm_resources.fs, event_manager)?;
+    attach_fs_devices(
+        &mut vmm,
+        &vm_resources.fs,
+        event_manager,
+        interrupt_controller,
+    )?;
     #[cfg(target_os = "linux")]
     if let Some(vsock) = vm_resources.vsock.get() {
-        attach_unixsock_vsock_device(&mut vmm, vsock, event_manager)?;
+        attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, interrupt_controller.clone())?;
     }
 
     if let Some(s) = &vm_resources.boot_config.kernel_cmdline_epilog {
@@ -409,14 +422,14 @@ pub fn build_microvm(
     #[cfg(target_arch = "x86_64")]
     load_cmdline(&vmm)?;
 
-    println!("system");
+    //println!("system");
     vmm.configure_system(vcpus.as_slice(), &None)
         .map_err(StartMicrovmError::Internal)?;
-    println!("vcpus");
+    //println!("vcpus");
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
 
-    println!("vmm");
+    //println!("vmm");
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
@@ -568,17 +581,23 @@ fn attach_legacy_devices(
     vm: &Vm,
     mmio_device_manager: &mut MMIODeviceManager,
     kernel_cmdline: &mut kernel::cmdline::Cmdline,
+    interrupt_controller: Option<Arc<Mutex<Gic>>>,
     serial: Option<Arc<Mutex<Serial>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     if let Some(serial) = serial {
         mmio_device_manager
-            .register_mmio_serial(vm, kernel_cmdline, serial)
+            .register_mmio_serial(vm, kernel_cmdline, interrupt_controller.clone(), serial)
             .map_err(Error::RegisterMMIODevice)
             .map_err(StartMicrovmError::Internal)?;
     }
 
     mmio_device_manager
-        .register_mmio_rtc(vm)
+        .register_mmio_rtc(vm, interrupt_controller.clone())
+        .map_err(Error::RegisterMMIODevice)
+        .map_err(StartMicrovmError::Internal)?;
+
+    mmio_device_manager
+        .register_mmio_gic(vm, interrupt_controller)
         .map_err(Error::RegisterMMIODevice)
         .map_err(StartMicrovmError::Internal)?;
 
@@ -660,23 +679,27 @@ fn attach_mmio_device(
     let (_mmio_base, _irq) = vmm
         .mmio_device_manager
         .register_mmio_device(/*vmm.vm.fd(),*/ device, type_id, id)?;
-    //#[cfg(target_arch = "x86_64")]
+    #[cfg(target_arch = "x86_64")]
     vmm.mmio_device_manager
         .add_device_to_cmdline(cmdline, _mmio_base, _irq)?;
 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn attach_fs_devices(
     vmm: &mut Vmm,
     fs_devs: &FsBuilder,
     event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     for fs in fs_devs.list.iter() {
         let id = String::from(fs.lock().unwrap().id());
+
+        if let Some(ref intc) = intc {
+            fs.lock().unwrap().set_intc(intc.clone());
+        }
 
         event_manager
             .add_subscriber(fs.clone())
@@ -697,6 +720,7 @@ fn attach_fs_devices(
 fn attach_console_devices(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -705,10 +729,14 @@ fn attach_console_devices(
             .unwrap(),
     ));
 
+    if let Some(intc) = intc {
+        console.lock().unwrap().set_intc(intc);
+    }
+
     // Stdin may not be pollable (i.e. when running a container without "-i"). If that's
     // the case, disable the interactive mode in the console.
     //if !event_manager.is_pollable(io::stdin().as_raw_fd()) {
-    console.lock().unwrap().set_interactive(false);
+    //console.lock().unwrap().set_interactive(false);
     //}
 
     event_manager
@@ -735,6 +763,7 @@ fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,
     event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -743,6 +772,11 @@ fn attach_unixsock_vsock_device(
         .map_err(RegisterEvent)?;
 
     let id = String::from(unix_vsock.lock().unwrap().id());
+
+    if let Some(intc) = intc {
+        unix_vsock.lock().unwrap().set_intc(intc);
+    }
+
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(
         vmm,
@@ -757,6 +791,7 @@ fn attach_unixsock_vsock_device(
 fn attach_balloon_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -767,6 +802,11 @@ fn attach_balloon_device(
         .map_err(RegisterEvent)?;
 
     let id = String::from(balloon.lock().unwrap().id());
+
+    if let Some(intc) = intc {
+        balloon.lock().unwrap().set_intc(intc);
+    }
+
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(
         vmm,

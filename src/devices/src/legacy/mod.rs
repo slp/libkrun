@@ -5,11 +5,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+#[cfg(target_arch = "aarch64")]
+mod gic;
 mod i8042;
 #[cfg(target_arch = "aarch64")]
 mod rtc_pl031;
 mod serial;
 
+#[cfg(target_arch = "aarch64")]
+pub use self::gic::Gic;
 pub use self::i8042::Error as I8042DeviceError;
 pub use self::i8042::I8042Device;
 #[cfg(target_arch = "aarch64")]

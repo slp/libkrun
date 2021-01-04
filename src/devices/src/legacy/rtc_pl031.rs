@@ -11,9 +11,11 @@
 extern crate utils;
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{io, result};
 
+use super::Gic;
 use crate::BusDevice;
 use utils::byte_order;
 use utils::eventfd::EventFd;
@@ -67,6 +69,7 @@ pub struct RTC {
     imsc: u32,
     ris: u32,
     interrupt_evt: EventFd,
+    intc: Option<Arc<Mutex<Gic>>>,
 }
 
 impl RTC {
@@ -81,7 +84,12 @@ impl RTC {
             imsc: 0,
             ris: 0,
             interrupt_evt,
+            intc: None,
         }
+    }
+
+    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+        self.intc = Some(intc);
     }
 
     fn trigger_interrupt(&mut self) -> Result<()> {

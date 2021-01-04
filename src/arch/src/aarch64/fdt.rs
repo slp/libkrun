@@ -318,7 +318,10 @@ fn create_cpu_nodes(fdt: &mut Vec<u8>, vcpu_mpidr: &Vec<u64>) -> Result<()> {
         }
         // Set the field to first 24 bits of the MPIDR - Multiprocessor Affinity Register.
         // See http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.ddi0488c/BABHBJCI.html.
-        append_property_u64(fdt, "reg", vcpu_mpidr[cpu_index] & 0x7FFFFF)?;
+        let cpu_reg = [0, 0];
+        let cpu_reg_prop = generate_prop32(&cpu_reg);
+
+        append_property(fdt, "reg", &cpu_reg_prop)?;
         append_end_node(fdt)?;
     }
     append_end_node(fdt)?;
@@ -450,7 +453,11 @@ fn create_virtio_node<T: DeviceInfoForFDT + Clone + Debug>(
     dev_info: &T,
 ) -> Result<()> {
     let device_reg_prop = generate_prop64(&[dev_info.addr(), dev_info.length()]);
-    let irq = generate_prop32(&[GIC_FDT_IRQ_TYPE_SPI, dev_info.irq(), IRQ_TYPE_EDGE_RISING]);
+    let irq = generate_prop32(&[
+        GIC_FDT_IRQ_TYPE_SPI,
+        dev_info.irq() - 32,
+        IRQ_TYPE_EDGE_RISING,
+    ]);
 
     append_begin_node(fdt, &format!("virtio_mmio@{:x}", dev_info.addr()))?;
     append_property_string(fdt, "compatible", "virtio,mmio")?;

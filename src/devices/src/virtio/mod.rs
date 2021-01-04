@@ -13,7 +13,6 @@ use std::io::Error as IOError;
 pub mod balloon;
 pub mod console;
 pub mod device;
-#[cfg(target_os = "linux")]
 pub mod fs;
 mod mmio;
 mod queue;
@@ -23,7 +22,6 @@ pub mod vsock;
 pub use self::balloon::*;
 pub use self::console::*;
 pub use self::device::*;
-#[cfg(target_os = "linux")]
 pub use self::fs::*;
 pub use self::mmio::*;
 pub use self::queue::*;

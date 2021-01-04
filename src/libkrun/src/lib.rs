@@ -17,7 +17,6 @@ use once_cell::sync::Lazy;
 use polly::event_manager::EventManager;
 use vmm::resources::VmResources;
 use vmm::vmm_config::boot_source::{BootSourceConfig, DEFAULT_KERNEL_CMDLINE};
-#[cfg(target_os = "linux")]
 use vmm::vmm_config::fs::FsDeviceConfig;
 use vmm::vmm_config::kernel_bundle::KernelBundle;
 use vmm::vmm_config::machine_config::VmConfig;
@@ -221,13 +220,11 @@ pub unsafe extern "C" fn krun_set_root(ctx_id: u32, c_root_path: *const c_char) 
         Err(_) => return -libc::EINVAL,
     };
 
-    #[cfg(target_os = "linux")]
     let fs_device_config = FsDeviceConfig {
         fs_id: "/dev/root".to_string(),
         shared_dir: root_path.to_string(),
     };
 
-    #[cfg(target_os = "linux")]
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
         Entry::Occupied(mut ctx_cfg) => {
             if ctx_cfg

@@ -6,14 +6,19 @@
 // found in the THIRD-PARTY file.
 
 use std::collections::HashMap;
+use std::os::unix::io::FromRawFd;
+use std::os::unix::prelude::RawFd;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
+#[cfg(target_arch = "aarch64")]
+use arch::aarch64::layout;
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::DeviceInfoForFDT;
 use arch::DeviceType;
 use devices;
 
+use devices::legacy::Gic;
 use devices::BusDevice;
 use kernel::cmdline as kernel_cmdline;
 #[cfg(target_arch = "aarch64")]
@@ -94,7 +99,7 @@ impl MMIODeviceManager {
     /// Register an already created MMIO device to be used via MMIO transport.
     pub fn register_mmio_device(
         &mut self,
-        mmio_device: devices::virtio::MmioTransport,
+        mut mmio_device: devices::virtio::MmioTransport,
         type_id: u32,
         device_id: String,
     ) -> Result<(u64, u32)> {
@@ -102,22 +107,22 @@ impl MMIODeviceManager {
             return Err(Error::IrqsExhausted);
         }
 
+        let mut queue_evts: Vec<EventFd> = Vec::new();
+
         for (i, queue_evt) in mmio_device
             .locked_device()
             .queue_events()
             .iter()
             .enumerate()
         {
-            /*
-            let io_addr = IoEventAddress::Mmio(
-                self.mmio_base + u64::from(devices::virtio::NOTIFY_REG_OFFSET),
-            );
-
-            vm.register_ioevent(queue_evt, &io_addr, i as u32)
-                .map_err(Error::RegisterIoEvent)?;
-            */
+            queue_evts.push(unsafe { queue_evt.try_clone().unwrap() });
         }
 
+        for (i, queue_evt) in queue_evts.drain(0..).enumerate() {
+            mmio_device.register_queue_evt(queue_evt, i as u32);
+        }
+
+        mmio_device.locked_device().set_irq_line(self.irq);
         //vm.register_irqfd(mmio_device.locked_device().interrupt_evt(), self.irq)
         //    .map_err(Error::RegisterIrqFd)?;
 
@@ -166,6 +171,7 @@ impl MMIODeviceManager {
         &mut self,
         _vm: &Vm,
         cmdline: &mut kernel_cmdline::Cmdline,
+        intc: Option<Arc<Mutex<devices::legacy::Gic>>>,
         serial: Arc<Mutex<devices::legacy::Serial>>,
     ) -> Result<()> {
         if self.irq > self.last_irq {
@@ -201,14 +207,17 @@ impl MMIODeviceManager {
 
     #[cfg(target_arch = "aarch64")]
     /// Register a MMIO RTC device.
-    pub fn register_mmio_rtc(&mut self, _vm: &Vm) -> Result<()> {
+    pub fn register_mmio_rtc(&mut self, _vm: &Vm, intc: Option<Arc<Mutex<Gic>>>) -> Result<()> {
         if self.irq > self.last_irq {
             return Err(Error::IrqsExhausted);
         }
 
         // Attaching the RTC device.
         let rtc_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?;
-        let device = devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        let mut device = devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        if let Some(intc) = intc {
+            device.set_intc(intc);
+        }
         //vm.register_irqfd(&rtc_evt, self.irq)
         //    .map_err(Error::RegisterIrqFd)?;
 
@@ -228,6 +237,22 @@ impl MMIODeviceManager {
 
         self.mmio_base += MMIO_LEN;
         self.irq += 1;
+
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    /// Register a MMIO GIC device.
+    pub fn register_mmio_gic(&mut self, _vm: &Vm, intc: Option<Arc<Mutex<Gic>>>) -> Result<()> {
+        if let Some(intc) = intc {
+            self.bus
+                .insert(
+                    intc,
+                    devices::legacy::Gic::get_addr(),
+                    devices::legacy::Gic::get_size(),
+                )
+                .map_err(|err| Error::BusError(err))?;
+        }
 
         Ok(())
     }

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use vm_memory::ByteValued;
 
+use super::bindings;
 use super::filesystem::{
     Context, DirEntry, Entry, FileSystem, FsOptions, GetxattrReply, ListxattrReply, OpenOptions,
     SetattrValid, ZeroCopyReader, ZeroCopyWriter,
@@ -27,7 +28,10 @@ use super::multikey::MultikeyBTreeMap;
 const CURRENT_DIR_CSTR: &[u8] = b".\0";
 const PARENT_DIR_CSTR: &[u8] = b"..\0";
 const EMPTY_CSTR: &[u8] = b"\0";
+#[cfg(target_os = "linux")]
 const PROC_CSTR: &[u8] = b"/proc/self/fd\0";
+#[cfg(target_os = "macos")]
+const PROC_CSTR: &[u8] = b"/dev/fd\0";
 const INIT_CSTR: &[u8] = b"init.krun\0";
 
 static INIT_BINARY: &[u8] = include_bytes!("../../../../../init/init");
@@ -37,7 +41,7 @@ type Handle = u64;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 struct InodeAltKey {
-    ino: libc::ino64_t,
+    ino: bindings::ino64_t,
     dev: libc::dev_t,
 }
 
@@ -56,13 +60,14 @@ struct HandleData {
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default)]
 struct LinuxDirent64 {
-    d_ino: libc::ino64_t,
-    d_off: libc::off64_t,
+    d_ino: bindings::ino64_t,
+    d_off: bindings::off64_t,
     d_reclen: libc::c_ushort,
     d_ty: libc::c_uchar,
 }
 unsafe impl ByteValued for LinuxDirent64 {}
 
+#[cfg(target_os = "linux")]
 macro_rules! scoped_cred {
     ($name:ident, $ty:ty, $syscall_nr:expr) => {
         #[derive(Debug)]
@@ -113,9 +118,12 @@ macro_rules! scoped_cred {
         }
     };
 }
+#[cfg(target_os = "linux")]
 scoped_cred!(ScopedUid, libc::uid_t, libc::SYS_setresuid);
+#[cfg(target_os = "linux")]
 scoped_cred!(ScopedGid, libc::gid_t, libc::SYS_setresgid);
 
+#[cfg(target_os = "linux")]
 fn set_creds(
     uid: libc::uid_t,
     gid: libc::gid_t,
@@ -124,27 +132,43 @@ fn set_creds(
     // lose the capability to change the gid.  However changing back can happen in any order.
     ScopedGid::new(gid).and_then(|gid| Ok((ScopedUid::new(uid)?, gid)))
 }
+#[cfg(target_os = "macos")]
+fn set_creds(uid: libc::uid_t, gid: libc::gid_t) -> io::Result<(Option<u32>, Option<u32>)> {
+    Ok((None, None))
+}
 
 fn ebadf() -> io::Error {
     io::Error::from_raw_os_error(libc::EBADF)
 }
 
-fn stat(f: &File) -> io::Result<libc::stat64> {
-    let mut st = MaybeUninit::<libc::stat64>::zeroed();
+#[cfg(target_os = "linux")]
+fn stat(f: &File) -> io::Result<bindings::stat64> {
+    let mut st = MaybeUninit::<bindings::stat64>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
     let pathname = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
+    let flags = libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW;
+
     // Safe because the kernel will only write data in `st` and we check the return
     // value.
-    let res = unsafe {
-        libc::fstatat64(
-            f.as_raw_fd(),
-            pathname.as_ptr(),
-            st.as_mut_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
+    let res =
+        unsafe { bindings::fstatat64(f.as_raw_fd(), pathname.as_ptr(), st.as_mut_ptr(), flags) };
+    if res >= 0 {
+        // Safe because the kernel guarantees that the struct is now fully initialized.
+        Ok(unsafe { st.assume_init() })
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stat(f: &File) -> io::Result<bindings::stat64> {
+    let mut st = MaybeUninit::<bindings::stat64>::zeroed();
+
+    // Safe because the kernel will only write data in `st` and we check the return
+    // value.
+    let res = unsafe { libc::fstat(f.as_raw_fd(), st.as_mut_ptr()) };
     if res >= 0 {
         // Safe because the kernel guarantees that the struct is now fully initialized.
         Ok(unsafe { st.assume_init() })
@@ -257,7 +281,7 @@ impl Default for Config {
             cache_policy: Default::default(),
             writeback: false,
             root_dir: String::from("/"),
-            xattr: true,
+            xattr: false,
             proc_sfd_rawfd: None,
         }
     }
@@ -304,14 +328,13 @@ impl PassthroughFs {
             // Safe because this is a constant value and a valid C string.
             let proc_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(PROC_CSTR) };
 
+            #[cfg(target_os = "linux")]
+            let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            #[cfg(target_os = "macos")]
+            let flags = libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
             // Safe because this doesn't modify any memory and we check the return value.
-            let fd = unsafe {
-                libc::openat(
-                    libc::AT_FDCWD,
-                    proc_cstr.as_ptr(),
-                    libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
+            let fd = unsafe { libc::openat(libc::AT_FDCWD, proc_cstr.as_ptr(), flags) };
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -397,14 +420,13 @@ impl PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
+        #[cfg(target_os = "linux")]
+        let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        #[cfg(target_os = "macos")]
+        let flags = libc::O_SYMLINK | libc::O_CLOEXEC;
+
         // Safe because this doesn't modify any memory and we check the return value.
-        let fd = unsafe {
-            libc::openat(
-                p.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
+        let fd = unsafe { libc::openat(p.file.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -456,6 +478,7 @@ impl PassthroughFs {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn do_readdir<F>(
         &self,
         inode: Inode,
@@ -489,8 +512,9 @@ impl PassthroughFs {
             let dir = data.file.write().unwrap();
 
             // Safe because this doesn't modify any memory and we check the return value.
-            let res =
-                unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
+            let res = unsafe {
+                bindings::lseek64(dir.as_raw_fd(), offset as bindings::off64_t, libc::SEEK_SET)
+            };
             if res < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -560,6 +584,72 @@ impl PassthroughFs {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
+    fn do_readdir<F>(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        size: u32,
+        offset: u64,
+        mut add_entry: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(DirEntry) -> io::Result<usize>,
+    {
+        if size == 0 {
+            return Ok(());
+        }
+
+        let data = self
+            .handles
+            .read()
+            .unwrap()
+            .get(&handle)
+            .filter(|hd| hd.inode == inode)
+            .map(Arc::clone)
+            .ok_or_else(ebadf)?;
+
+        let mut buf = vec![0; size as usize];
+
+        let dir_stream = unsafe { libc::fdopendir(data.file.write().unwrap().as_raw_fd()) };
+        if dir_stream == std::ptr::null_mut() {
+            return Err(io::Error::last_os_error());
+        }
+
+        loop {
+            let dentry = unsafe { libc::readdir(dir_stream) };
+            if dentry == std::ptr::null_mut() {
+                break;
+            }
+
+            unsafe {
+                if ((*dentry).d_name[0] as u8 == b'.' && (*dentry).d_name[1] as u8 == b'\0')
+                    || ((*dentry).d_name[0] as u8 == b'.'
+                        && (*dentry).d_name[1] as u8 == b'.'
+                        && (*dentry).d_name[2] as u8 == b'\0')
+                {
+                    // We don't want to report the "." and ".." entries. However, returning `Ok(0)` will
+                    // break the loop so return `Ok` with a non-zero value instead.
+                    //Ok(1)
+                } else {
+                    let mut name: Vec<u8> = Vec::new();
+                    for c in &(*dentry).d_name {
+                        name.push(*c as u8);
+                    }
+                    add_entry(DirEntry {
+                        ino: (*dentry).d_ino,
+                        offset: (*dentry).d_seekoff as u64,
+                        type_: u32::from((*dentry).d_type),
+                        name: &name,
+                    })
+                    .unwrap();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
         debug!("do_open: {:?}", inode);
         let file = RwLock::new(self.open_inode(inode, flags as i32)?);
@@ -604,7 +694,7 @@ impl PassthroughFs {
         Err(ebadf())
     }
 
-    fn do_getattr(&self, inode: Inode) -> io::Result<(libc::stat64, Duration)> {
+    fn do_getattr(&self, inode: Inode) -> io::Result<(bindings::stat64, Duration)> {
         let data = self
             .inodes
             .read()
@@ -681,16 +771,15 @@ impl FileSystem for PassthroughFs {
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let root = CString::new(self.cfg.root_dir.as_str()).expect("CString::new failed");
 
+        #[cfg(target_os = "linux")]
+        let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        #[cfg(target_os = "macos")]
+        let flags = libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
         // Safe because this doesn't modify any memory and we check the return value.
         // We use `O_PATH` because we just want this for traversing the directory tree
         // and not for actually reading the contents.
-        let fd = unsafe {
-            libc::openat(
-                libc::AT_FDCWD,
-                root.as_ptr(),
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
+        let fd = unsafe { libc::openat(libc::AT_FDCWD, root.as_ptr(), flags) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -734,7 +823,7 @@ impl FileSystem for PassthroughFs {
         self.inodes.write().unwrap().clear();
     }
 
-    fn statfs(&self, _ctx: Context, inode: Inode) -> io::Result<libc::statvfs64> {
+    fn statfs(&self, _ctx: Context, inode: Inode) -> io::Result<bindings::statvfs64> {
         let data = self
             .inodes
             .read()
@@ -743,10 +832,10 @@ impl FileSystem for PassthroughFs {
             .map(Arc::clone)
             .ok_or_else(ebadf)?;
 
-        let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
+        let mut out = MaybeUninit::<bindings::statvfs64>::zeroed();
 
         // Safe because this will only modify `out` and we check the return value.
-        let res = unsafe { libc::fstatvfs64(data.file.as_raw_fd(), out.as_mut_ptr()) };
+        let res = unsafe { bindings::fstatvfs64(data.file.as_raw_fd(), out.as_mut_ptr()) };
         if res == 0 {
             // Safe because the kernel guarantees that `out` has been initialized.
             Ok(unsafe { out.assume_init() })
@@ -760,7 +849,7 @@ impl FileSystem for PassthroughFs {
         let init_name = unsafe { CStr::from_bytes_with_nul_unchecked(INIT_CSTR) };
 
         if self.init_inode != 0 && name == init_name {
-            let mut st: libc::stat64 = unsafe { mem::zeroed() };
+            let mut st: bindings::stat64 = unsafe { mem::zeroed() };
             st.st_size = INIT_BINARY.len() as i64;
             st.st_ino = self.init_inode;
             st.st_mode = 0o100_755;
@@ -828,7 +917,13 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::mkdirat(data.file.as_raw_fd(), name.as_ptr(), mode & !umask) };
+        let res = unsafe {
+            libc::mkdirat(
+                data.file.as_raw_fd(),
+                name.as_ptr(),
+                (mode & !umask).try_into().unwrap(),
+            )
+        };
         if res == 0 {
             self.do_lookup(parent, name)
         } else {
@@ -1037,7 +1132,7 @@ impl FileSystem for PassthroughFs {
         _ctx: Context,
         inode: Inode,
         _handle: Option<Handle>,
-    ) -> io::Result<(libc::stat64, Duration)> {
+    ) -> io::Result<(bindings::stat64, Duration)> {
         self.do_getattr(inode)
     }
 
@@ -1045,10 +1140,10 @@ impl FileSystem for PassthroughFs {
         &self,
         _ctx: Context,
         inode: Inode,
-        attr: libc::stat64,
+        attr: bindings::stat64,
         handle: Option<Handle>,
         valid: SetattrValid,
-    ) -> io::Result<(libc::stat64, Duration)> {
+    ) -> io::Result<(bindings::stat64, Duration)> {
         let inode_data = self
             .inodes
             .read()
@@ -1113,15 +1208,14 @@ impl FileSystem for PassthroughFs {
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
 
+            #[cfg(target_os = "linux")]
+            let flags = libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW;
+            #[cfg(target_os = "macos")]
+            let flags = libc::AT_SYMLINK_NOFOLLOW;
+
             // Safe because this doesn't modify any memory and we check the return value.
             let res = unsafe {
-                libc::fchownat(
-                    inode_data.file.as_raw_fd(),
-                    empty.as_ptr(),
-                    uid,
-                    gid,
-                    libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-                )
+                libc::fchownat(inode_data.file.as_raw_fd(), empty.as_ptr(), uid, gid, flags)
             };
             if res < 0 {
                 return Err(io::Error::last_os_error());
@@ -1211,9 +1305,20 @@ impl FileSystem for PassthroughFs {
         // Safe because this doesn't modify any memory and we check the return value.
         // TODO: Switch to libc::renameat2 once https://github.com/rust-lang/libc/pull/1508 lands
         // and we have glibc 2.28.
+        #[cfg(target_os = "linux")]
         let res = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
+                old_inode.file.as_raw_fd(),
+                oldname.as_ptr(),
+                new_inode.file.as_raw_fd(),
+                newname.as_ptr(),
+                flags,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let res = unsafe {
+            libc::renameatx_np(
                 old_inode.file.as_raw_fd(),
                 oldname.as_ptr(),
                 new_inode.file.as_raw_fd(),
@@ -1248,7 +1353,7 @@ impl FileSystem for PassthroughFs {
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
-            libc::mknodat(
+            bindings::mknodat(
                 data.file.as_raw_fd(),
                 name.as_ptr(),
                 (mode & !umask) as libc::mode_t,
@@ -1409,11 +1514,14 @@ impl FileSystem for PassthroughFs {
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
+            #[cfg(target_os = "linux")]
             if datasync {
                 libc::fdatasync(fd)
             } else {
                 libc::fsync(fd)
             }
+            #[cfg(target_os = "macos")]
+            libc::fsync(fd)
         };
 
         if res == 0 {
@@ -1482,6 +1590,7 @@ impl FileSystem for PassthroughFs {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn setxattr(
         &self,
         _ctx: Context,
@@ -1491,7 +1600,7 @@ impl FileSystem for PassthroughFs {
         flags: u32,
     ) -> io::Result<()> {
         if !self.cfg.xattr {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS));
         }
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1523,11 +1632,15 @@ impl FileSystem for PassthroughFs {
         size: u32,
     ) -> io::Result<GetxattrReply> {
         if !self.cfg.xattr {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS));
         }
 
+        println!(
+            "getxattr: inode={}, init_inode={}\n",
+            inode, self.init_inode
+        );
         if inode == self.init_inode {
-            return Err(io::Error::from_raw_os_error(libc::ENODATA));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENODATA));
         }
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1537,17 +1650,19 @@ impl FileSystem for PassthroughFs {
         let mut buf = vec![0; size as usize];
 
         // Safe because this will only modify the contents of `buf`.
-        let res = unsafe {
-            libc::fgetxattr(
-                file.as_raw_fd(),
-                name.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                size as libc::size_t,
-            )
-        };
-        if res < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        /*
+            let res = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    size as libc::size_t,
+                )
+            };
+            if res < 0 {
+                return Err(io::Error::last_os_error());
+        }*/
+        let res = 0;
 
         if size == 0 {
             Ok(GetxattrReply::Count(res as u32))
@@ -1557,9 +1672,10 @@ impl FileSystem for PassthroughFs {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn listxattr(&self, _ctx: Context, inode: Inode, size: u32) -> io::Result<ListxattrReply> {
         if !self.cfg.xattr {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS));
         }
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1588,9 +1704,10 @@ impl FileSystem for PassthroughFs {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn removexattr(&self, _ctx: Context, inode: Inode, name: &CStr) -> io::Result<()> {
         if !self.cfg.xattr {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS));
         }
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1628,11 +1745,11 @@ impl FileSystem for PassthroughFs {
         let fd = data.file.write().unwrap().as_raw_fd();
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
-            libc::fallocate64(
+            bindings::fallocate64(
                 fd,
                 mode as libc::c_int,
-                offset as libc::off64_t,
-                length as libc::off64_t,
+                offset as bindings::off64_t,
+                length as bindings::off64_t,
             )
         };
         if res == 0 {
@@ -1662,7 +1779,7 @@ impl FileSystem for PassthroughFs {
         let fd = data.file.write().unwrap().as_raw_fd();
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::lseek(fd, offset as libc::off64_t, whence as libc::c_int) };
+        let res = unsafe { libc::lseek(fd, offset as bindings::off64_t, whence as libc::c_int) };
         if res < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -1670,6 +1787,7 @@ impl FileSystem for PassthroughFs {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn copyfilerange(
         &self,
         _ctx: Context,

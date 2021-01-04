@@ -20,7 +20,7 @@ use std::fmt::{Display, Formatter, Result};
 //                                          console=hvc0 rootfstype=virtiofs rw quiet";
 
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 pci=off nomodules \
-                                          console=hvc0 rootfstype=virtiofs rw";
+                                          console=hvc0 rootfstype=virtiofs rw quiet";
 
 //pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules earlyprintk=ttyS0 \
 //                                          console=ttyS0";

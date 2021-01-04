@@ -26,7 +26,7 @@ use super::bindings::{
 };
 use super::hvf::{
     hv_call, EC_AA64_BKPT, EC_AA64_HVC, EC_AA64_SMC, EC_DATAABORT, EC_SVEACCESSTRAP,
-    EC_SYSTEMREGISTERTRAP, PSTATE_FAULT_BITS_64, SYSREG_MASK,
+    EC_SYSTEMREGISTERTRAP, EC_WFX_TRAP, PSTATE_FAULT_BITS_64, SYSREG_MASK,
 };
 
 use arch;
@@ -225,7 +225,7 @@ impl<'a> HvfVcpu<'a> {
             std::ptr::null_mut(),
         ))
         .unwrap();
-        println!("vcpu_exit: {:?}", vcpu_exit_ptr);
+
         hv_call(hv_vcpu_set_reg(
             vcpuid,
             hv_reg_t_HV_REG_CPSR,
@@ -247,7 +247,6 @@ impl<'a> HvfVcpu<'a> {
             &pc as *const _ as *mut _,
         ))
         .unwrap();
-        println!("pc is {:x}", pc);
 
         /*
         hv_call(hv_vcpu_set_sys_reg(
@@ -569,11 +568,13 @@ impl Vcpu {
                         let rt: u32 = ((syndrome >> 5) & 0x1f) as u32;
                         let reg: u64 = syndrome & SYSREG_MASK;
 
+                        /*
                         println!("sysreg operation reg={} (op0={} op1={} op2={} crn={} crm={}) isread={:?}",
                                      reg, (reg >> 20) & 0x3,
                                      (reg >> 14) & 0x7, (reg >> 17) & 0x7,
                                      (reg >> 10) & 0xf, (reg >> 1) & 0xf,
                                      isread);
+                        */
 
                         if isread {
                             //let val: u64 = 0;
@@ -651,6 +652,11 @@ impl Vcpu {
                                         mmio_bus.read(pa, &mut data);
                                         u8::from_le_bytes(data) as u64
                                     }
+                                    2 => {
+                                        let mut data: [u8; 2] = [0; 2];
+                                        mmio_bus.read(pa, &mut data);
+                                        u16::from_le_bytes(data) as u64
+                                    }
                                     4 => {
                                         let mut data: [u8; 4] = [0; 4];
                                         mmio_bus.read(pa, &mut data);
@@ -661,7 +667,7 @@ impl Vcpu {
                                         mmio_bus.read(pa, &mut data);
                                         u64::from_le_bytes(data) as u64
                                     }
-                                    _ => panic!("unsupported mmio len={}", len),
+                                    _ => panic!("unsupported mmio len={} pa=0x{:x}", len, pa),
                                 };
                                 if srt < 31 {
                                     hv_call(unsafe {
@@ -685,6 +691,11 @@ impl Vcpu {
                     }
                     EC_AA64_BKPT => {
                         println!("BRK call");
+                    }
+                    EC_WFX_TRAP => {
+                        //println!("WFX_TRAP: pc=0x{:x}", pc);
+                        advance_pc = true;
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     _ => panic!("unexpected exception: 0x{:x}", ec),
                 }

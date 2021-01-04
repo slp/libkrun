@@ -11,6 +11,7 @@ const PSR_D_BIT: u64 = 0x0000_0200;
 // Taken from arch/arm64/kvm/inject_fault.c.
 pub const PSTATE_FAULT_BITS_64: u64 = PSR_MODE_EL1h | PSR_A_BIT | PSR_F_BIT | PSR_I_BIT | PSR_D_BIT;
 
+pub const EC_WFX_TRAP: u64 = 0x1;
 pub const EC_AA64_HVC: u64 = 0x16;
 pub const EC_AA64_SMC: u64 = 0x17;
 pub const EC_SYSTEMREGISTERTRAP: u64 = 0x18;

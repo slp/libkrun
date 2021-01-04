@@ -11,7 +11,6 @@ use libc::O_NONBLOCK;
 /// Wrapper for configuring the microVM boot source.
 pub mod boot_source;
 /// Wrapper for configuring the Fs devices attached to the microVM.
-#[cfg(target_os = "linux")]
 pub mod fs;
 /// Wrapper over the microVM general information attached to the microVM.
 pub mod instance_info;

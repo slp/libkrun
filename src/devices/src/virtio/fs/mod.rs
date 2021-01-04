@@ -1,3 +1,4 @@
+pub mod bindings;
 pub mod descriptor_utils;
 mod device;
 mod event_handler;

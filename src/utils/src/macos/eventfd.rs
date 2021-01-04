@@ -15,9 +15,10 @@ pub const EFD_NONBLOCK: i32 = 1;
 
 /// A safe wrapper around Linux
 /// [`eventfd`](http://man7.org/linux/man-pages/man2/eventfd.2.html).
+#[derive(Debug)]
 pub struct EventFd {
-    vmm_fd: RawFd,
-    device_fd: RawFd,
+    read_fd: RawFd,
+    write_fd: RawFd,
 }
 
 impl EventFd {
@@ -45,10 +46,9 @@ impl EventFd {
         } else {
             // This is safe because we checked ret for success and know
             // the kernel gave us an fd that we own.
-            println!("pipe: {:?} {:?}", fds[0], fds[1]);
             Ok(EventFd {
-                vmm_fd: fds[0],
-                device_fd: fds[1],
+                read_fd: fds[0],
+                write_fd: fds[1],
             })
         }
     }
@@ -78,7 +78,7 @@ impl EventFd {
         // can not overflow because we give the syscall's size parameter properly.
         let ret = unsafe {
             write(
-                self.device_fd,
+                self.write_fd,
                 &v as *const u64 as *const c_void,
                 mem::size_of::<u64>(),
             )
@@ -112,7 +112,7 @@ impl EventFd {
             // This is safe because we made this fd and the pointer we
             // pass can not overflow because we give the syscall's size parameter properly.
             read(
-                self.device_fd,
+                self.read_fd,
                 &mut buf as *mut u64 as *mut c_void,
                 mem::size_of::<u64>(),
             )
@@ -142,26 +142,25 @@ impl EventFd {
     /// ```
     pub fn try_clone(&self) -> result::Result<EventFd, io::Error> {
         // This is safe because we made this fd and properly check that it returns without error.
-        let vmm_fd = unsafe { dup(self.vmm_fd) };
-        if vmm_fd < 0 {
+        let read_fd = unsafe { dup(self.read_fd) };
+        if read_fd < 0 {
             return Err(io::Error::last_os_error());
         }
 
-        let device_fd = unsafe { dup(self.device_fd) };
-        if device_fd < 0 {
+        let write_fd = unsafe { dup(self.write_fd) };
+        if write_fd < 0 {
             return Err(io::Error::last_os_error());
         }
 
         // This is safe because we checked ret for success and know the kernel gave us an fd that we
         // own.
-        Ok(EventFd { vmm_fd, device_fd })
+        Ok(EventFd { read_fd, write_fd })
     }
 }
 
 impl AsRawFd for EventFd {
     fn as_raw_fd(&self) -> RawFd {
-        println!("device_fd: {:?}", self.device_fd);
-        self.device_fd
+        self.read_fd
     }
 }
 
@@ -169,7 +168,8 @@ impl AsRawFd for EventFd {
 impl FromRawFd for EventFd {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
         EventFd {
-            eventfd: File::from_raw_fd(fd),
+            device_fd: fd,
+            vmm_fd: -1,
         }
     }
 }
