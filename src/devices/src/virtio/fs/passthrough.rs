@@ -12,7 +12,7 @@ use std::mem::{self, size_of, MaybeUninit};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use vm_memory::ByteValued;
@@ -49,12 +49,25 @@ struct InodeData {
     inode: Inode,
     // Most of these aren't actually files but ¯\_(ツ)_/¯.
     file: File,
+    linkdata: CString,
+    filepath: CString,
     refcount: AtomicU64,
 }
 
 struct HandleData {
     inode: Inode,
     file: RwLock<File>,
+}
+
+struct DirStream {
+    stream: u64,
+    offset: u64,
+}
+
+struct DirHandleData {
+    inode: Inode,
+    file: RwLock<File>,
+    dirstream: Mutex<DirStream>,
 }
 
 #[repr(C, packed)]
@@ -307,6 +320,10 @@ pub struct PassthroughFs {
     next_handle: AtomicU64,
     init_handle: u64,
 
+    dir_handles: RwLock<BTreeMap<Handle, Arc<DirHandleData>>>,
+    next_dir_handle: AtomicU64,
+    init_dir_handle: u64,
+
     // File descriptor pointing to the `/proc/self/fd` directory. This is used to convert an fd from
     // `inodes` into one that can go into `handles`. This is accomplished by reading the
     // `/proc/self/fd/{}` symlink. We keep an open fd here in case the file system tree that we are
@@ -354,6 +371,10 @@ impl PassthroughFs {
             next_handle: AtomicU64::new(1),
             init_handle: 0,
 
+            dir_handles: RwLock::new(BTreeMap::new()),
+            next_dir_handle: AtomicU64::new(1),
+            init_dir_handle: 0,
+
             proc_self_fd,
 
             writeback: AtomicBool::new(false),
@@ -361,6 +382,7 @@ impl PassthroughFs {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn open_inode(&self, inode: Inode, mut flags: i32) -> io::Result<File> {
         let data = self
             .inodes
@@ -411,6 +433,56 @@ impl PassthroughFs {
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
+    #[cfg(target_os = "macos")]
+    fn open_inode(&self, inode: Inode, mut flags: i32) -> io::Result<File> {
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .map(Arc::clone)
+            .ok_or_else(ebadf)?;
+
+        // When writeback caching is enabled, the kernel may send read requests even if the
+        // userspace program opened the file write-only. So we need to ensure that we have opened
+        // the file for reading as well as writing.
+        let writeback = self.writeback.load(Ordering::Relaxed);
+        if writeback && flags & libc::O_ACCMODE == libc::O_WRONLY {
+            flags &= !libc::O_ACCMODE;
+            flags |= libc::O_RDWR;
+        }
+
+        // When writeback caching is enabled the kernel is responsible for handling `O_APPEND`.
+        // However, this breaks atomicity as the file may have changed on disk, invalidating the
+        // cached copy of the data in the kernel and the offset that the kernel thinks is the end of
+        // the file. Just allow this for now as it is the user's responsibility to enable writeback
+        // caching only for directories that are not shared. It also means that we need to clear the
+        // `O_APPEND` flag.
+        if writeback && flags & libc::O_APPEND != 0 {
+            flags &= !libc::O_APPEND;
+        }
+
+        // Safe because this doesn't modify any memory and we check the return value. We don't
+        // really check `flags` because if the kernel can't handle poorly specified flags then we
+        // have much bigger problems. Also, clear the `O_NOFOLLOW` flag if it is set since we need
+        // to follow the `/proc/self/fd` symlink to get the file.
+        //println!("open_inode filepath={:?}", data.filepath);
+        let fd = unsafe {
+            libc::open(
+                data.filepath.as_ptr(),
+                (flags | libc::O_CLOEXEC) & (!libc::O_NOFOLLOW) & (!libc::O_EXLOCK),
+            )
+        };
+        if fd < 0 {
+            //println!("open_inode ret={:?}", io::Error::last_os_error());
+            return Err(io::Error::last_os_error());
+        }
+        //println!("open_inode OK");
+
+        // Safe because we just opened this fd.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
     fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let p = self
             .inodes
@@ -434,7 +506,41 @@ impl PassthroughFs {
         // Safe because we just opened this fd.
         let f = unsafe { File::from_raw_fd(fd) };
 
+        let mut filepath: Vec<u8> = vec![0; libc::PATH_MAX as usize];
+        let res = unsafe {
+            libc::fcntl(
+                fd,
+                libc::F_GETPATH,
+                filepath.as_mut_ptr() as *mut libc::c_void,
+            )
+        };
+        let fpsize = filepath.iter().position(|&x| x == 0);
+        filepath.resize(fpsize.unwrap(), 0);
+        //println!("do_lookup fp={:?}", CString::new(filepath.clone()).unwrap());
+
         let st = stat(&f)?;
+
+        let linkdata = if (st.st_mode & libc::S_IFMT) == libc::S_IFLNK {
+            let mut buf = vec![0; libc::PATH_MAX as usize];
+
+            let res = unsafe {
+                libc::readlinkat(
+                    p.file.as_raw_fd(),
+                    name.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_char,
+                    buf.len(),
+                )
+            };
+            if res < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            buf.resize(res as usize, 0);
+
+            CString::new(buf).unwrap()
+        } else {
+            CString::new("").unwrap()
+        };
 
         let altkey = InodeAltKey {
             ino: st.st_ino,
@@ -460,6 +566,8 @@ impl PassthroughFs {
                 Arc::new(InodeData {
                     inode,
                     file: f,
+                    linkdata,
+                    filepath: CString::new(filepath).unwrap(),
                     refcount: AtomicU64::new(1),
                 }),
             );
@@ -601,7 +709,7 @@ impl PassthroughFs {
         }
 
         let data = self
-            .handles
+            .dir_handles
             .read()
             .unwrap()
             .get(&handle)
@@ -611,31 +719,58 @@ impl PassthroughFs {
 
         let mut buf = vec![0; size as usize];
 
-        let dir_stream = unsafe { libc::fdopendir(data.file.write().unwrap().as_raw_fd()) };
-        if dir_stream == std::ptr::null_mut() {
-            return Err(io::Error::last_os_error());
+        let mut ds = data.dirstream.lock().unwrap();
+
+        let dir_stream = if ds.stream == 0 {
+            let dir = unsafe { libc::fdopendir(data.file.write().unwrap().as_raw_fd()) };
+            if dir == std::ptr::null_mut() {
+                println!("error in opendir");
+                return Err(io::Error::last_os_error());
+            }
+            ds.stream = dir as u64;
+            dir
+        } else {
+            ds.stream as *mut libc::DIR
+        };
+
+        if offset != ds.offset {
+            ds.offset = offset;
+            unsafe { libc::seekdir(dir_stream, offset as i64) };
         }
 
+        let mut rem = size;
         loop {
+            //println!("readdir loop");
             let dentry = unsafe { libc::readdir(dir_stream) };
             if dentry == std::ptr::null_mut() {
                 break;
             }
 
             unsafe {
+                if (*dentry).d_reclen as u32 > rem {
+                    //println!("readdir doesn't fit");
+                    break;
+                }
+
                 if ((*dentry).d_name[0] as u8 == b'.' && (*dentry).d_name[1] as u8 == b'\0')
                     || ((*dentry).d_name[0] as u8 == b'.'
                         && (*dentry).d_name[1] as u8 == b'.'
                         && (*dentry).d_name[2] as u8 == b'\0')
                 {
+                    //println!("omitting entry");
                     // We don't want to report the "." and ".." entries. However, returning `Ok(0)` will
                     // break the loop so return `Ok` with a non-zero value instead.
                     //Ok(1)
                 } else {
                     let mut name: Vec<u8> = Vec::new();
                     for c in &(*dentry).d_name {
+                        if *c == 0 {
+                            name.push(0);
+                            break;
+                        }
                         name.push(*c as u8);
                     }
+                    //println!("adding entry: {:?}", std::str::from_utf8(&name).unwrap());
                     add_entry(DirEntry {
                         ino: (*dentry).d_ino,
                         offset: (*dentry).d_seekoff as u64,
@@ -644,6 +779,12 @@ impl PassthroughFs {
                     })
                     .unwrap();
                 }
+
+                rem -= (*dentry).d_reclen as u32;
+                if rem < 512 {
+                    //println!("breaking early");
+                    break;
+                }
             }
         }
 
@@ -651,7 +792,6 @@ impl PassthroughFs {
     }
 
     fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
-        debug!("do_open: {:?}", inode);
         let file = RwLock::new(self.open_inode(inode, flags as i32)?);
 
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
@@ -679,10 +819,47 @@ impl PassthroughFs {
         Ok((Some(handle), opts))
     }
 
+    fn do_opendir(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
+        let file = RwLock::new(self.open_inode(inode, (flags | libc::O_DIRECTORY as u32) as i32)?);
+
+        let dir_handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        let stream = DirStream {
+            stream: 0,
+            offset: 0,
+        };
+        let data = DirHandleData {
+            inode,
+            file,
+            dirstream: Mutex::new(stream),
+        };
+
+        self.dir_handles
+            .write()
+            .unwrap()
+            .insert(dir_handle, Arc::new(data));
+
+        Ok((Some(dir_handle), OpenOptions::empty()))
+    }
+
     fn do_release(&self, inode: Inode, handle: Handle) -> io::Result<()> {
         let mut handles = self.handles.write().unwrap();
 
         if let btree_map::Entry::Occupied(e) = handles.entry(handle) {
+            if e.get().inode == inode {
+                // We don't need to close the file here because that will happen automatically when
+                // the last `Arc` is dropped.
+                e.remove();
+                return Ok(());
+            }
+        }
+
+        Err(ebadf())
+    }
+
+    fn do_releasedir(&self, inode: Inode, handle: Handle) -> io::Result<()> {
+        let mut dir_handles = self.dir_handles.write().unwrap();
+
+        if let btree_map::Entry::Occupied(e) = dir_handles.entry(handle) {
             if e.get().inode == inode {
                 // We don't need to close the file here because that will happen automatically when
                 // the last `Arc` is dropped.
@@ -806,11 +983,14 @@ impl FileSystem for PassthroughFs {
             Arc::new(InodeData {
                 inode: fuse::ROOT_ID,
                 file: f,
+                linkdata: CString::new("").unwrap(),
+                filepath: CString::new(self.cfg.root_dir.clone()).unwrap(),
                 refcount: AtomicU64::new(2),
             }),
         );
 
-        let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        //let mut opts = FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO;
+        let mut opts = FsOptions::empty();
         if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
@@ -886,7 +1066,7 @@ impl FileSystem for PassthroughFs {
         inode: Inode,
         flags: u32,
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
-        self.do_open(inode, flags | (libc::O_DIRECTORY as u32))
+        self.do_opendir(inode, flags)
     }
 
     fn releasedir(
@@ -896,7 +1076,7 @@ impl FileSystem for PassthroughFs {
         _flags: u32,
         handle: Handle,
     ) -> io::Result<()> {
-        self.do_release(inode, handle)
+        self.do_releasedir(inode, handle)
     }
 
     fn mkdir(
@@ -1436,6 +1616,7 @@ impl FileSystem for PassthroughFs {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn readlink(&self, _ctx: Context, inode: Inode) -> io::Result<Vec<u8>> {
         let data = self
             .inodes
@@ -1465,6 +1646,19 @@ impl FileSystem for PassthroughFs {
 
         buf.resize(res as usize, 0);
         Ok(buf)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn readlink(&self, _ctx: Context, inode: Inode) -> io::Result<Vec<u8>> {
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .map(Arc::clone)
+            .ok_or_else(ebadf)?;
+
+        Ok(data.linkdata.as_bytes().to_vec())
     }
 
     fn flush(

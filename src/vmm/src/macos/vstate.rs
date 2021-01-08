@@ -164,12 +164,12 @@ impl Vm {
             .with_regions(|index, region| {
                 // It's safe to unwrap because the guest address is valid.
                 let host_addr = guest_mem.get_host_address(region.start_addr()).unwrap();
-                println!(
-                    "Guest memory host_addr={:x?} guest_addr={:x?} len={:x?}",
-                    host_addr,
-                    region.start_addr().raw_value(),
-                    region.len()
-                );
+                //println!(
+                //    "Guest memory host_addr={:x?} guest_addr={:x?} len={:x?}",
+                //    host_addr,
+                //    region.start_addr().raw_value(),
+                //    region.len()
+                //);
 
                 guest_mem.with_regions(|_, region| unsafe {
                     hv_call(hv_vm_map(
@@ -558,7 +558,33 @@ impl Vcpu {
 
                 let mut advance_pc = false;
                 match ec {
-                    EC_AA64_HVC => println!("HVC call"),
+                    EC_AA64_HVC => {
+                        let val: u64 = 0;
+                        hv_call(unsafe {
+                            hv_vcpu_get_reg(
+                                vcpu.vcpuid,
+                                hv_reg_t_HV_REG_X0,
+                                &val as *const _ as *mut _,
+                            )
+                        });
+
+                        //println!("HVC call: param=0x{:x}", val);
+                        let ret = match val {
+                            0x8400_0000 => Some(2),
+                            0x8400_0006 => Some(2),
+                            0x8400_0009 => return Ok(VcpuEmulation::Stopped),
+                            _ => {
+                                println!("HVC call unhandled");
+                                None
+                            }
+                        };
+
+                        if let Some(ret) = ret {
+                            hv_call(unsafe {
+                                hv_vcpu_set_reg(vcpu.vcpuid, hv_reg_t_HV_REG_X0, ret)
+                            });
+                        }
+                    }
                     EC_AA64_SMC => {
                         println!("SMC call");
                         advance_pc = true;
@@ -695,7 +721,7 @@ impl Vcpu {
                     EC_WFX_TRAP => {
                         //println!("WFX_TRAP: pc=0x{:x}", pc);
                         advance_pc = true;
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        //std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     _ => panic!("unexpected exception: 0x{:x}", ec),
                 }

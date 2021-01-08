@@ -38,7 +38,7 @@ bitflags! {
 // have the same alignment as those from the `epoll_event` struct from C.
 #[derive(Clone)]
 pub struct EpollEvent {
-    events: u32,
+    pub events: u32,
     u64: u64,
 }
 
@@ -97,17 +97,13 @@ impl EpollEvent {
 #[derive(Debug)]
 pub struct Epoll {
     watcher: Watcher,
-    enabled: bool,
 }
 
 impl Epoll {
     /// Create a new epoll file descriptor.
     pub fn new() -> io::Result<Self> {
         let watcher = Watcher::new()?;
-        Ok(Epoll {
-            watcher,
-            enabled: false,
-        })
+        Ok(Epoll { watcher })
     }
 
     /// Wrapper for `libc::epoll_ctl`.
@@ -148,7 +144,7 @@ impl Epoll {
                 }
             }
         }
-        self.enabled = false;
+        self.watcher.watch();
         Ok(())
     }
 
@@ -170,11 +166,6 @@ impl Epoll {
         timeout: i32,
         events: &mut [EpollEvent],
     ) -> io::Result<usize> {
-        if !self.enabled {
-            self.watcher.watch()?;
-            self.enabled = true;
-        }
-
         let tout = if timeout > 0 {
             Some(Duration::from_millis(timeout as u64))
         } else {
@@ -200,13 +191,13 @@ impl Epoll {
     }
 }
 
-/*
 impl AsRawFd for Epoll {
     fn as_raw_fd(&self) -> RawFd {
-        self.device_fd
+        self.watcher.as_raw_fd()
     }
 }
 
+/*
 impl std::ops::Drop for Epoll {
     fn drop(&mut self) {
         // Safe because this fd is opened with `epoll_create` and we trust

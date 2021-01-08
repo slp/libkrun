@@ -15,7 +15,6 @@ use device_manager::legacy::PortIODeviceManager;
 use device_manager::mmio::MMIODeviceManager;
 use devices::legacy::{Gic, Serial};
 use devices::virtio::MmioTransport;
-#[cfg(target_os = "linux")]
 use devices::virtio::{Vsock, VsockUnixBackend};
 
 use polly::event_manager::{Error as EventManagerError, EventManager};
@@ -406,9 +405,8 @@ pub fn build_microvm(
         &mut vmm,
         &vm_resources.fs,
         event_manager,
-        interrupt_controller,
+        interrupt_controller.clone(),
     )?;
-    #[cfg(target_os = "linux")]
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, interrupt_controller.clone())?;
     }
@@ -758,7 +756,6 @@ fn attach_console_devices(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,

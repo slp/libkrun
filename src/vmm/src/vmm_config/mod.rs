@@ -21,7 +21,6 @@ pub mod logger;
 /// Wrapper for configuring the memory and CPU of the microVM.
 pub mod machine_config;
 /// Wrapper for configuring the vsock devices attached to the microVM.
-#[cfg(target_os = "linux")]
 pub mod vsock;
 
 type Result<T> = std::result::Result<T, std::io::Error>;

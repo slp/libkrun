@@ -8,7 +8,6 @@ use vmm_config::fs::*;
 use vmm_config::kernel_bundle::{KernelBundle, KernelBundleError};
 use vmm_config::logger::LoggerConfigError;
 use vmm_config::machine_config::{VmConfig, VmConfigError};
-#[cfg(target_os = "linux")]
 use vmm_config::vsock::*;
 use vstate::VcpuConfig;
 
@@ -28,7 +27,6 @@ pub enum Error {
     /// microVM vCpus or memory configuration error.
     VmConfig(VmConfigError),
     /// Vsock device configuration error.
-    #[cfg(target_os = "linux")]
     VsockDevice(VsockConfigError),
 }
 
@@ -45,7 +43,6 @@ pub struct VmResources {
     /// The fs device.
     pub fs: FsBuilder,
     /// The vsock device.
-    #[cfg(target_os = "linux")]
     pub vsock: VsockBuilder,
 }
 
@@ -144,7 +141,6 @@ impl VmResources {
     }
 
     /// Sets a vsock device to be attached when the VM starts.
-    #[cfg(target_os = "linux")]
     pub fn set_vsock_device(&mut self, config: VsockDeviceConfig) -> Result<VsockConfigError> {
         self.vsock.insert(config)
     }

@@ -20,7 +20,6 @@ use vmm::vmm_config::boot_source::{BootSourceConfig, DEFAULT_KERNEL_CMDLINE};
 use vmm::vmm_config::fs::FsDeviceConfig;
 use vmm::vmm_config::kernel_bundle::KernelBundle;
 use vmm::vmm_config::machine_config::VmConfig;
-#[cfg(target_os = "linux")]
 use vmm::vmm_config::vsock::VsockDeviceConfig;
 
 // Minimum krunfw version we require.
@@ -156,13 +155,11 @@ pub extern "C" fn krun_create_ctx() -> i32 {
     };
     ctx_cfg.vmr.set_kernel_bundle(kernel_bundle).unwrap();
 
-    #[cfg(target_os = "linux")]
     let vsock_device_config = VsockDeviceConfig {
         vsock_id: "vsock0".to_string(),
         guest_cid: 3,
         uds_path: "/tmp/vsock0".to_string(),
     };
-    #[cfg(target_os = "linux")]
     ctx_cfg.vmr.set_vsock_device(vsock_device_config).unwrap();
 
     let ctx_id = CTX_IDS.fetch_add(1, Ordering::SeqCst);
