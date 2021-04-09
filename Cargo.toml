@@ -7,3 +7,7 @@ members = ["src/libkrun"]
 [profile.release]
 #panic = "abort"
 lto = true
+
+[patch.crates-io]
+#kvm-bindings = { path = '/root/src/kvm-bindings' }
+kvm-ioctls = { path = '/root/src/kvm-ioctls' }

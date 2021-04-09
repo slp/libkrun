@@ -3,9 +3,11 @@
 
 //! Enables pre-boot setup, instantiation and booting of a Firecracker VMM.
 
+use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
+use std::fs::OpenOptions;
 use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -254,6 +256,34 @@ impl VmmEventsObserver for SerialStdin {
     }
 }
 
+fn fetch_chain(fw: &mut sev::firmware::Firmware) -> sev::certs::Chain {
+    use codicon::Decoder;
+
+    const CEK_SVC: &str = "https://kdsintf.amd.com/cek/id";
+    //const NAPLES: &str = "https://developer.amd.com/wp-content/resources/ask_ark_naples.cert";
+    const ROME: &str = "https://developer.amd.com/wp-content/resources/ask_ark_rome.cert";
+
+    let mut chain = fw
+        .pdh_cert_export()
+        .expect("unable to export SEV certificates");
+
+    let id = fw.get_identifer().expect("error fetching identifier");
+    let url = format!("{}/{}", CEK_SVC, id);
+
+    let mut rsp = reqwest::get(&url).expect(&format!("unable to contact server"));
+    assert!(rsp.status().is_success());
+
+    chain.cek = sev::certs::sev::Certificate::decode(&mut rsp, ()).expect("Invalid CEK!");
+
+    let mut rsp = reqwest::get(ROME).expect(&format!("unable to contact server"));
+    assert!(rsp.status().is_success());
+
+    sev::certs::Chain {
+        ca: sev::certs::ca::Chain::decode(&mut rsp, ()).expect("Invalid CA chain!"),
+        sev: chain,
+    }
+}
+
 /// Builds and starts a microVM based on the current Firecracker VmResources configuration.
 ///
 /// This is the default build recipe, one could build other microVM flavors by using the
@@ -296,6 +326,36 @@ pub fn build_microvm(
         Some(s) => kernel_cmdline.insert_str(s).unwrap(),
     };
     let mut vm = setup_vm(&guest_memory)?;
+
+    // Server delivers chain and build to client...
+    let mut fw = sev::firmware::Firmware::open().unwrap();
+    let build = fw.platform_status().unwrap().build;
+    let chain = fetch_chain(&mut fw);
+
+    // Client creates session and starts the launch.
+    let mut policy = sev::launch::Policy::default();
+    let session = sev::session::Session::try_from(policy).unwrap();
+    let start = session.start(chain).unwrap();
+
+    let sev = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/sev")
+        .unwrap();
+    let fw_fd = sev.into_raw_fd();
+    vm.setup_memcrypt_prepare(fw_fd, start).unwrap();
+    vm.setup_memcrypt_finish(
+        fw_fd,
+        guest_memory
+            .get_host_address(GuestAddress(0xFFFF_0000))
+            .unwrap() as u64,
+        0x1_0000,
+        guest_memory
+            .get_host_address(GuestAddress(kernel_bundle.guest_addr))
+            .unwrap() as u64,
+        kernel_bundle.size,
+    )
+    .unwrap();
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
@@ -458,8 +518,8 @@ pub fn build_microvm(
 
     // Write the kernel command line to guest memory. This is x86_64 specific, since on
     // aarch64 the command line will be specified through the FDT.
-    #[cfg(target_arch = "x86_64")]
-    load_cmdline(&vmm)?;
+    //#[cfg(target_arch = "x86_64")]
+    //load_cmdline(&vmm)?;
 
     vmm.configure_system(vcpus.as_slice(), &None)
         .map_err(StartMicrovmError::Internal)?;

@@ -9,6 +9,8 @@ use libc::{c_int, c_void, siginfo_t};
 use std::cell::Cell;
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::mem::{size_of_val, uninitialized};
+use std::os::unix::io::RawFd;
 use std::result;
 use std::sync::atomic::{fence, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -489,6 +491,145 @@ impl Vm {
         &self.irqchip_handle.as_ref().unwrap()
     }
 
+    fn sev_init(&self, fw_fd: RawFd) -> Result<()> {
+        let mut cmd = SevCommand {
+            error: 0,
+            data: 0,
+            fd: fw_fd as u32,
+            code: 0, // Init
+        };
+
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
+    fn sev_launch_start(&self, fw_fd: RawFd, start: sev::launch::Start) -> Result<()> {
+        #[repr(C)]
+        struct Data {
+            handle: u32,
+            policy: sev::launch::Policy,
+            dh_addr: u64,
+            dh_size: u32,
+            session_addr: u64,
+            session_size: u32,
+        }
+
+        let mut data = Data {
+            handle: 0,
+            policy: start.policy,
+            //dh_addr: 0 as u64,
+            //dh_size: 0,
+            //session_addr: 0 as u64,
+            //session_size: 0,
+            dh_addr: &start.cert as *const _ as u64,
+            dh_size: size_of_val(&start.cert) as u32,
+            session_addr: &start.session as *const _ as u64,
+            session_size: size_of_val(&start.session) as u32,
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: fw_fd as u32,
+            code: 2, // LaunchStart
+        };
+
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
+    fn sev_launch_update_data(
+        &self,
+        fw_fd: RawFd,
+        kernel_user_addr: u64,
+        kernel_size: usize,
+    ) -> Result<()> {
+        #[repr(C)]
+        struct Data {
+            addr: u64,
+            size: u32,
+        }
+
+        let mut data = Data {
+            addr: kernel_user_addr,
+            size: kernel_size as u32,
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: fw_fd as u32,
+            code: 3, // LaunchStart
+        };
+
+        println!(
+            "update_data: addr={:x} size={:x}",
+            kernel_user_addr, kernel_size
+        );
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
+    fn sev_launch_measure(&self, fw_fd: RawFd) -> Result<()> {
+        #[repr(C)]
+        struct Data {
+            addr: u64,
+            size: u32,
+        }
+
+        let mut measurement: sev::launch::Measurement = unsafe { uninitialized() };
+        let mut data = Data {
+            addr: &mut measurement as *mut _ as u64,
+            size: size_of_val(&measurement) as u32,
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: fw_fd as u32,
+            code: 6, // LaunchMeasure
+        };
+
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
+    fn sev_finish(&self, fw_fd: RawFd) -> Result<()> {
+        let mut cmd = SevCommand {
+            error: 0,
+            data: 0,
+            fd: fw_fd as u32,
+            code: 7, // LaunchFinish
+        };
+
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
+    pub fn setup_memcrypt_prepare(&self, fw_fd: RawFd, start: sev::launch::Start) -> Result<()> {
+        self.sev_init(fw_fd).unwrap();
+        self.sev_launch_start(fw_fd, start).unwrap();
+        Ok(())
+    }
+
+    pub fn setup_memcrypt_finish(
+        &self,
+        fw_fd: RawFd,
+        bootldr_uaddr: u64,
+        bootldr_size: usize,
+        kernel_uaddr: u64,
+        kernel_size: usize,
+    ) -> Result<()> {
+        self.sev_launch_update_data(fw_fd, bootldr_uaddr, bootldr_size)
+            .unwrap();
+        self.sev_launch_update_data(fw_fd, kernel_uaddr, kernel_size)
+            .unwrap();
+
+        self.sev_launch_measure(fw_fd).unwrap();
+        self.sev_finish(fw_fd).unwrap();
+        Ok(())
+    }
+
     /// Gets a reference to the kvm file descriptor owned by this VM.
     pub fn fd(&self) -> &VmFd {
         &self.fd
@@ -710,7 +851,7 @@ impl Vcpu {
         exit_evt: EventFd,
         create_ts: TimestampUs,
     ) -> Result<Self> {
-        let kvm_vcpu = vm_fd.create_vcpu(id).map_err(Error::VcpuFd)?;
+        let kvm_vcpu = vm_fd.create_vcpu(id as u64).map_err(Error::VcpuFd)?;
         let (event_sender, event_receiver) = channel();
         let (response_sender, response_receiver) = channel();
 
@@ -929,7 +1070,7 @@ impl Vcpu {
 
         // Build the list of MSRs we want to save.
         let num_msrs = self.msr_list.as_fam_struct_ref().nmsrs as usize;
-        let mut msrs = Msrs::new(num_msrs);
+        let mut msrs = Msrs::new(num_msrs).unwrap();
         {
             let indices = self.msr_list.as_slice();
             let msr_entries = msrs.as_mut_slice();

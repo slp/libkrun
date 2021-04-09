@@ -219,21 +219,43 @@ fn setup_page_tables(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) -> Result<()>
         .map_err(|_| Error::WritePML4Address)?;
 
     // Entry covering VA [0..1GB)
-    mem.write_obj(boot_pde_addr.raw_value() as u64 | 0x03, boot_pdpte_addr)
+    mem.write_obj(boot_pde_addr.raw_value() as u64 | 0x8003, boot_pdpte_addr)
         .map_err(|_| Error::WritePDPTEAddress)?;
+
+    // Entry covering VA [0..1GB)
+    mem.write_obj(
+        (boot_pde_addr.raw_value() + 512 * 8) as u64 | 0x8003,
+        GuestAddress(boot_pdpte_addr.raw_value() + 8),
+    )
+    .map_err(|_| Error::WritePDPTEAddress)?;
+
+    // Entry covering VA [0..1GB)
+    mem.write_obj(
+        (boot_pde_addr.raw_value() + 1024 * 8) as u64 | 0x8003,
+        GuestAddress(boot_pdpte_addr.raw_value() + 16),
+    )
+    .map_err(|_| Error::WritePDPTEAddress)?;
+
+    // Entry covering VA [0..1GB)
+    mem.write_obj(
+        (boot_pde_addr.raw_value() + 1536 * 8) as u64 | 0x8003,
+        GuestAddress(boot_pdpte_addr.raw_value() + 24),
+    )
+    .map_err(|_| Error::WritePDPTEAddress)?;
 
     // 512 2MB entries together covering VA [0..1GB). Note we are assuming
     // CPU supports 2MB pages (/proc/cpuinfo has 'pse'). All modern CPUs do.
-    for i in 0..512 {
-        mem.write_obj((i << 21) + 0x83u64, boot_pde_addr.unchecked_add(i * 8))
-            .map_err(|_| Error::WritePDEAddress)?;
+    for i in 0..2048 {
+        mem.write_obj(
+            (i << 21) + 0x83u64 | (1 << 47),
+            boot_pde_addr.unchecked_add(i * 8),
+        )
+        .map_err(|_| Error::WritePDEAddress)?;
     }
 
-    /*
-    sregs.cr3 = boot_pml4_addr.raw_value() as u64;
-    sregs.cr4 |= X86_CR4_PAE;
-    sregs.cr0 |= X86_CR0_PG;
-    */
+    //sregs.cr3 = boot_pml4_addr.raw_value() as u64;
+    //sregs.cr4 |= X86_CR4_PAE;
+    //sregs.cr0 |= X86_CR0_PG;
     Ok(())
 }
 

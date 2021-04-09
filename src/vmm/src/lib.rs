@@ -10,6 +10,7 @@
 //! machine (microVM).
 //#![deny(missing_docs)]
 
+extern crate codicon;
 #[cfg(target_os = "macos")]
 extern crate hvf;
 #[cfg(target_os = "linux")]

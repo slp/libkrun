@@ -4,7 +4,9 @@ version = "0.1.0"
 authors = ["Amazon Firecracker team <firecracker-devel@amazon.com>"]
 
 [dependencies]
+codicon = "2.1.0"
 libc = ">=0.2.39"
+reqwest = "0.9.15"
 
 arch = { path = "../arch" }
 devices = { path = "../devices" }
@@ -13,6 +15,7 @@ logger = { path = "../logger" }
 vm-memory = { git = "https://github.com/rust-vmm/vm-memory", features = ["backend-mmap"] }
 utils = { path = "../utils"}
 polly = { path = "../polly" }
+sev = { path = "/root/src/enarx-sev", features = ["openssl"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 cpuid = { path = "../cpuid" }
