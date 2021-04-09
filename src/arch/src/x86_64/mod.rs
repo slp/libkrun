@@ -74,14 +74,17 @@ pub fn arch_memory_regions(
     let (ram_last_addr, shm_start_addr, regions) = match size.checked_sub(MMIO_MEM_START as usize) {
         // case1: guest memory fits before the gap
         None | Some(0) => {
-            let ram_last_addr = kernel_load_addr + kernel_size as u64 + size as u64;
+            //let ram_last_addr = kernel_load_addr + kernel_size as u64 + size as u64;
+            let ram_last_addr = size as u64;
             let shm_start_addr = FIRST_ADDR_PAST_32BITS;
             (
                 ram_last_addr,
                 shm_start_addr,
                 vec![
-                    (GuestAddress(0), kernel_load_addr as usize),
-                    (GuestAddress(kernel_load_addr + kernel_size as u64), size),
+                    //(GuestAddress(0), kernel_load_addr as usize),
+                    //(GuestAddress(kernel_load_addr + kernel_size as u64), size),
+                    (GuestAddress(0), size),
+                    (GuestAddress(0xFFFF_0000), 64 * 1024),
                     (GuestAddress(FIRST_ADDR_PAST_32BITS), MMIO_SHM_SIZE as usize),
                 ],
             )
@@ -161,7 +164,7 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    mptable::setup_mptable(guest_mem, num_cpus).map_err(Error::MpTableSetup)?;
+    //mptable::setup_mptable(guest_mem, num_cpus).map_err(Error::MpTableSetup)?;
 
     let mut params: BootParamsWrapper = BootParamsWrapper(boot_params::default());
 
@@ -210,10 +213,12 @@ pub fn configure_system(
         }
     }
 
+    /*
     let zero_page_addr = GuestAddress(layout::ZERO_PAGE_START);
     guest_mem
         .write_obj(params, zero_page_addr)
         .map_err(|_| Error::ZeroPageSetup)?;
+    */
 
     Ok(())
 }

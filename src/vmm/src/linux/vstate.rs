@@ -1025,23 +1025,27 @@ impl Vcpu {
             Ok(run) => match run {
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoIn(addr, data) => {
+                    //println!("VcpuExit::IoIn: addr={:?} data={:?}", addr, data);
                     self.io_bus.read(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoOut(addr, data) => {
+                    //println!("VcpuExit::IoOut: addr={:?} data={:?}", addr, data);
                     self.check_boot_complete_signal(u64::from(addr), data);
 
                     self.io_bus.write(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioRead(addr, data) => {
+                    //println!("MmioRead");
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         mmio_bus.read(0, addr, data);
                     }
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioWrite(addr, data) => {
+                    //println!("MmioWrite");
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         #[cfg(target_arch = "aarch64")]
                         self.check_boot_complete_signal(addr, data);
@@ -1051,11 +1055,11 @@ impl Vcpu {
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::Hlt => {
-                    info!("Received KVM_EXIT_HLT signal");
+                    println!("Received KVM_EXIT_HLT signal");
                     Ok(VcpuEmulation::Stopped)
                 }
                 VcpuExit::Shutdown => {
-                    info!("Received KVM_EXIT_SHUTDOWN signal");
+                    println!("Received KVM_EXIT_SHUTDOWN signal");
                     Ok(VcpuEmulation::Stopped)
                 }
                 // Documentation specifies that below kvm exits are considered

@@ -26,7 +26,7 @@ use signal_handler::register_sigwinch_handler;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
-#[cfg(target_os = "macos")]
+//#[cfg(target_os = "macos")]
 use vm_memory::Bytes;
 #[cfg(target_os = "linux")]
 use vm_memory::{mmap::GuestRegionMmap, GuestMemory};
@@ -276,6 +276,7 @@ pub fn build_microvm(
             .map_err(StartMicrovmError::KernelBundle)?
     };
 
+    println!("kernel_bundle.guest_addr: {:?}", kernel_bundle.guest_addr);
     let (guest_memory, arch_memory_info) = create_guest_memory(
         vm_resources
             .vm_config()
@@ -298,7 +299,6 @@ pub fn build_microvm(
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    /*
     let serial_device = if cfg!(target_arch = "x86_64")
         || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
     {
@@ -310,9 +310,8 @@ pub fn build_microvm(
     } else {
         None
     };
-    */
 
-    let serial_device = None;
+    //let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -357,7 +356,9 @@ pub fn build_microvm(
             &vm,
             &vcpu_config,
             &guest_memory,
-            GuestAddress(kernel_bundle.guest_addr),
+            //GuestAddress(kernel_bundle.guest_addr),
+            //GuestAddress(0x1000),
+            GuestAddress(0xFFF0),
             request_ts,
             &pio_device_manager.io_bus,
             &exit_evt,
@@ -414,6 +415,7 @@ pub fn build_microvm(
     }
 
     #[cfg(target_os = "linux")]
+    /*
     let shm_region = Some(VirtioShmRegion {
         host_addr: guest_memory
             .get_host_address(GuestAddress(arch_memory_info.shm_start_addr))
@@ -421,7 +423,7 @@ pub fn build_microvm(
         guest_addr: arch_memory_info.shm_start_addr,
         size: arch_memory_info.shm_size as usize,
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]*/
     let shm_region = None;
 
     let mut vmm = Vmm {
@@ -438,7 +440,7 @@ pub fn build_microvm(
     };
 
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
-    attach_console_devices(&mut vmm, event_manager, intc.clone())?;
+    //attach_console_devices(&mut vmm, event_manager, intc.clone())?;
     attach_fs_devices(
         &mut vmm,
         &vm_resources.fs,
@@ -480,10 +482,16 @@ pub fn create_guest_memory(
     kernel_load_addr: u64,
     kernel_size: usize,
 ) -> std::result::Result<(GuestMemoryMmap, ArchMemoryInfo), StartMicrovmError> {
+    //const CODEBYTES: &[u8] = include_bytes!("/root/src/hellokvm/test.bin");
+    //const CODEBYTES: &[u8] = include_bytes!("/root/src/hellokvm/boot32");
+    const CODEBYTES: &[u8] = include_bytes!("/root/src-clean/qboot/build/bios.bin");
+    //const CODEBYTES: &[u8] = include_bytes!("/root/src/qboot/build/bios.bin");
+
     let mem_size = mem_size_mib << 20;
     let (arch_mem_info, arch_mem_regions) =
         arch::arch_memory_regions(mem_size, kernel_load_addr, kernel_size);
 
+    /*
     Ok((
         GuestMemoryMmap::from_ranges(&arch_mem_regions)
             .and_then(|memory| {
@@ -495,6 +503,28 @@ pub fn create_guest_memory(
             .map_err(StartMicrovmError::GuestMemoryMmap)?,
         arch_mem_info,
     ))
+     */
+    let guest_mem = GuestMemoryMmap::from_ranges(&arch_mem_regions)
+        .map_err(StartMicrovmError::GuestMemoryMmap)?;
+
+    let kernel_data = unsafe { std::slice::from_raw_parts(kernel_region.as_ptr(), kernel_size) };
+    guest_mem
+        .write(kernel_data, GuestAddress(kernel_load_addr as u64))
+        .unwrap();
+
+    /*
+    let bootldr_data = unsafe { std::slice::from_raw_parts(CODEBYTES.as_ptr(), CODEBYTES.len()) };
+    guest_mem
+        .write(bootldr_data, GuestAddress(0x1000 as u64))
+        .unwrap();
+    */
+
+    let bootldr_data = unsafe { std::slice::from_raw_parts(CODEBYTES.as_ptr(), CODEBYTES.len()) };
+    guest_mem
+        .write(bootldr_data, GuestAddress(0xFFFF_0000 as u64))
+        .unwrap();
+
+    Ok((guest_mem, arch_mem_info))
 }
 
 #[cfg(target_os = "macos")]

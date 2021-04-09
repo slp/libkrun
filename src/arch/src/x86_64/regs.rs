@@ -89,8 +89,53 @@ pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64) -> Result<()> {
 pub fn setup_sregs(mem: &GuestMemoryMmap, vcpu: &VcpuFd) -> Result<()> {
     let mut sregs: kvm_sregs = vcpu.get_sregs().map_err(Error::GetStatusRegisters)?;
 
-    configure_segments_and_sregs(mem, &mut sregs)?;
-    setup_page_tables(mem, &mut sregs)?; // TODO(dgreid) - Can this be done once per system instead?
+    println!("sregs: {:?}", sregs);
+    //configure_segments_and_sregs(mem, &mut sregs)?;
+    //setup_page_tables(mem, &mut sregs)?; // TODO(dgreid) - Can this be done once per system instead?
+
+    //sregs.cs.selector = 0;
+    //sregs.cs.base = 0;
+
+    //sregs.cs.base = 0xf_0000;
+    /*
+    sregs.cs.selector = 0xf000;
+    //sregs.cs.base = 0xffff0000;
+
+    sregs.cs.limit = 0xffff;
+    sregs.cs.type_ = 1;
+    sregs.cs.present = 1;
+    sregs.cs.dpl = 0;
+    sregs.cs.db = 0;
+    sregs.cs.l = 0;
+    sregs.cs.s = 0;
+    sregs.cs.g = 0;
+    sregs.cs.avl = 0;
+
+    sregs.ds.selector = 0x0;
+    sregs.ds.base = 0x0;
+    sregs.ds.limit = 0xffff;
+
+    sregs.es.selector = 0x0;
+    sregs.es.base = 0x0;
+    sregs.es.limit = 0xffff;
+
+    sregs.ss.selector = 0x0;
+    sregs.ss.base = 0x0;
+    sregs.ss.limit = 0xffff;
+
+    sregs.fs.selector = 0x0;
+    sregs.fs.base = 0x0;
+    sregs.fs.limit = 0xffff;
+
+    sregs.gs.selector = 0x0;
+    sregs.gs.base = 0x0;
+    sregs.gs.limit = 0xffff;
+
+    sregs.cr0 = 0x60000010;
+    sregs.efer = 0;
+    sregs.cr3 = 0;
+    sregs.cr4 = 0;
+    */
 
     vcpu.set_sregs(&sregs).map_err(Error::SetStatusRegisters)
 }
@@ -176,6 +221,7 @@ fn setup_page_tables(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) -> Result<()>
     // Entry covering VA [0..1GB)
     mem.write_obj(boot_pde_addr.raw_value() as u64 | 0x03, boot_pdpte_addr)
         .map_err(|_| Error::WritePDPTEAddress)?;
+
     // 512 2MB entries together covering VA [0..1GB). Note we are assuming
     // CPU supports 2MB pages (/proc/cpuinfo has 'pse'). All modern CPUs do.
     for i in 0..512 {
@@ -183,9 +229,11 @@ fn setup_page_tables(mem: &GuestMemoryMmap, sregs: &mut kvm_sregs) -> Result<()>
             .map_err(|_| Error::WritePDEAddress)?;
     }
 
+    /*
     sregs.cr3 = boot_pml4_addr.raw_value() as u64;
     sregs.cr4 |= X86_CR4_PAE;
     sregs.cr0 |= X86_CR0_PG;
+    */
     Ok(())
 }
 
