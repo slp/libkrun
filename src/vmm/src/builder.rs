@@ -5,7 +5,7 @@
 
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 #[cfg(target_os = "macos")]
@@ -13,6 +13,9 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 use super::{Error, Vmm};
+
+use codicon::{Decoder, Encoder};
+use serde::{Deserialize, Serialize};
 
 #[cfg(target_arch = "x86_64")]
 use device_manager::legacy::PortIODeviceManager;
@@ -257,8 +260,6 @@ impl VmmEventsObserver for SerialStdin {
 }
 
 fn fetch_chain(fw: &mut sev::firmware::Firmware) -> sev::certs::Chain {
-    use codicon::Decoder;
-
     const CEK_SVC: &str = "https://kdsintf.amd.com/cek/id";
     //const NAPLES: &str = "https://developer.amd.com/wp-content/resources/ask_ark_naples.cert";
     const ROME: &str = "https://developer.amd.com/wp-content/resources/ask_ark_rome.cert";
@@ -267,7 +268,7 @@ fn fetch_chain(fw: &mut sev::firmware::Firmware) -> sev::certs::Chain {
         .pdh_cert_export()
         .expect("unable to export SEV certificates");
 
-    let id = fw.get_identifer().expect("error fetching identifier");
+    let id = fw.get_identifier().expect("error fetching identifier");
     let url = format!("{}/{}", CEK_SVC, id);
 
     let mut rsp = reqwest::get(&url).expect(&format!("unable to contact server"));
@@ -283,6 +284,20 @@ fn fetch_chain(fw: &mut sev::firmware::Firmware) -> sev::certs::Chain {
         sev: chain,
     }
 }
+
+#[derive(Serialize, Deserialize)]
+struct SessionRequest {
+    build: sev::Build,
+    chain: sev::certs::Chain,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionResponse {
+    id: String,
+    start: sev::launch::Start,
+}
+
+const CODEBYTES: &[u8] = include_bytes!("/root/src-clean/qboot/build/bios.bin");
 
 /// Builds and starts a microVM based on the current Firecracker VmResources configuration.
 ///
@@ -330,12 +345,31 @@ pub fn build_microvm(
     // Server delivers chain and build to client...
     let mut fw = sev::firmware::Firmware::open().unwrap();
     let build = fw.platform_status().unwrap().build;
-    let chain = fetch_chain(&mut fw);
 
+    let chain = if let Ok(mut file) = File::open("/tmp/demo.chain") {
+        sev::certs::Chain::decode(&mut file, ()).unwrap()
+    } else {
+        let chain = fetch_chain(&mut fw);
+        let mut file = File::create("/tmp/demo.chain").unwrap();
+        chain.encode(&mut file, ()).unwrap();
+        chain
+    };
+
+    /*
     // Client creates session and starts the launch.
     let mut policy = sev::launch::Policy::default();
     let session = sev::session::Session::try_from(policy).unwrap();
     let start = session.start(chain).unwrap();
+    let start_json = serde_json::to_string(&start).unwrap();
+    println!("start_json: {}", start_json);
+     */
+
+    let response = ureq::post("http://127.0.0.1:8080/session")
+        .send_json(ureq::json!(SessionRequest { build, chain }))
+        .unwrap()
+        .into_string()
+        .unwrap();
+    let session_resp: SessionResponse = serde_json::from_str(&response).unwrap();
 
     let sev = OpenOptions::new()
         .read(true)
@@ -343,19 +377,35 @@ pub fn build_microvm(
         .open("/dev/sev")
         .unwrap();
     let fw_fd = sev.into_raw_fd();
-    vm.setup_memcrypt_prepare(fw_fd, start).unwrap();
-    vm.setup_memcrypt_finish(
-        fw_fd,
-        guest_memory
-            .get_host_address(GuestAddress(0xFFFF_0000))
-            .unwrap() as u64,
-        0x1_0000,
-        guest_memory
-            .get_host_address(GuestAddress(kernel_bundle.guest_addr))
-            .unwrap() as u64,
-        kernel_bundle.size,
-    )
+
+    vm.setup_memcrypt_prepare(fw_fd, session_resp.start)
+        .unwrap();
+
+    let measurement = vm
+        .setup_memcrypt_update_data(
+            fw_fd,
+            guest_memory
+                .get_host_address(GuestAddress(0xFFFF_0000))
+                .unwrap(),
+            0x1_0000,
+            guest_memory
+                .get_host_address(GuestAddress(kernel_bundle.guest_addr))
+                .unwrap(),
+            kernel_bundle.size,
+        )
+        .unwrap();
+
+    let secret_str = ureq::post(&format!(
+        "http://127.0.0.1:8080/attestation/{}",
+        session_resp.id
+    ))
+    .send_json(ureq::json!(measurement))
+    .unwrap()
+    .into_string()
     .unwrap();
+
+    println!("SECRET: {:?}", secret_str);
+    vm.setup_memcrypt_finish(fw_fd);
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
@@ -544,7 +594,6 @@ pub fn create_guest_memory(
 ) -> std::result::Result<(GuestMemoryMmap, ArchMemoryInfo), StartMicrovmError> {
     //const CODEBYTES: &[u8] = include_bytes!("/root/src/hellokvm/test.bin");
     //const CODEBYTES: &[u8] = include_bytes!("/root/src/hellokvm/boot32");
-    const CODEBYTES: &[u8] = include_bytes!("/root/src-clean/qboot/build/bios.bin");
     //const CODEBYTES: &[u8] = include_bytes!("/root/src/qboot/build/bios.bin");
 
     let mem_size = mem_size_mib << 20;

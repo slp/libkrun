@@ -17,6 +17,7 @@ extern crate hvf;
 extern crate kvm_bindings;
 #[cfg(target_os = "linux")]
 extern crate kvm_ioctls;
+extern crate serde;
 
 extern crate libc;
 extern crate polly;

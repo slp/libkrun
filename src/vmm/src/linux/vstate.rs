@@ -5,10 +5,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+use codicon::Decoder;
 use libc::{c_int, c_void, siginfo_t};
 use std::cell::Cell;
+use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 use std::mem::{size_of_val, uninitialized};
 use std::os::unix::io::RawFd;
 use std::result;
@@ -541,8 +544,8 @@ impl Vm {
     fn sev_launch_update_data(
         &self,
         fw_fd: RawFd,
-        kernel_user_addr: u64,
-        kernel_size: usize,
+        data_uaddr: *mut u8,
+        data_size: usize,
     ) -> Result<()> {
         #[repr(C)]
         struct Data {
@@ -551,8 +554,8 @@ impl Vm {
         }
 
         let mut data = Data {
-            addr: kernel_user_addr,
-            size: kernel_size as u32,
+            addr: data_uaddr as u64,
+            size: data_size as u32,
         };
 
         let mut cmd = SevCommand {
@@ -564,13 +567,13 @@ impl Vm {
 
         println!(
             "update_data: addr={:x} size={:x}",
-            kernel_user_addr, kernel_size
+            data_uaddr as u64, data_size
         );
         self.fd.memory_encrypt(&mut cmd).unwrap();
         Ok(())
     }
 
-    fn sev_launch_measure(&self, fw_fd: RawFd) -> Result<()> {
+    fn sev_launch_measure(&self, fw_fd: RawFd) -> Result<sev::launch::Measurement> {
         #[repr(C)]
         struct Data {
             addr: u64,
@@ -591,7 +594,7 @@ impl Vm {
         };
 
         self.fd.memory_encrypt(&mut cmd).unwrap();
-        Ok(())
+        Ok(measurement)
     }
 
     fn sev_finish(&self, fw_fd: RawFd) -> Result<()> {
@@ -612,22 +615,25 @@ impl Vm {
         Ok(())
     }
 
-    pub fn setup_memcrypt_finish(
+    pub fn setup_memcrypt_update_data(
         &self,
         fw_fd: RawFd,
-        bootldr_uaddr: u64,
+        bootldr_uaddr: *mut u8,
         bootldr_size: usize,
-        kernel_uaddr: u64,
+        kernel_uaddr: *mut u8,
         kernel_size: usize,
-    ) -> Result<()> {
+    ) -> Result<sev::launch::Measurement> {
         self.sev_launch_update_data(fw_fd, bootldr_uaddr, bootldr_size)
             .unwrap();
         self.sev_launch_update_data(fw_fd, kernel_uaddr, kernel_size)
             .unwrap();
 
-        self.sev_launch_measure(fw_fd).unwrap();
+        let measurement = self.sev_launch_measure(fw_fd).unwrap();
+        Ok(measurement)
+    }
+
+    pub fn setup_memcrypt_finish(&self, fw_fd: RawFd) {
         self.sev_finish(fw_fd).unwrap();
-        Ok(())
     }
 
     /// Gets a reference to the kvm file descriptor owned by this VM.
