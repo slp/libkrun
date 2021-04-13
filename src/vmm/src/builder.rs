@@ -395,7 +395,7 @@ pub fn build_microvm(
         )
         .unwrap();
 
-    let secret_str = ureq::post(&format!(
+    let secret_resp = ureq::post(&format!(
         "http://127.0.0.1:8080/attestation/{}",
         session_resp.id
     ))
@@ -404,8 +404,16 @@ pub fn build_microvm(
     .into_string()
     .unwrap();
 
-    println!("SECRET: {:?}", secret_str);
-    vm.setup_memcrypt_finish(fw_fd);
+    let secret: sev::launch::Secret = serde_json::from_str(&secret_resp).unwrap();
+
+    println!("SECRET: {:?}", secret);
+    vm.setup_memcrypt_finish(
+        fw_fd,
+        secret,
+        guest_memory
+            .get_host_address(GuestAddress(0x20000))
+            .unwrap() as u64,
+    );
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.

@@ -597,6 +597,43 @@ impl Vm {
         Ok(measurement)
     }
 
+    fn sev_inject_secret(
+        &self,
+        fw_fd: RawFd,
+        mut secret: sev::launch::Secret,
+        gaddr: u64,
+        size: u32,
+    ) -> Result<()> {
+        #[repr(C)]
+        struct Data {
+            headr_addr: u64,
+            headr_size: u32,
+            guest_addr: u64,
+            guest_size: u32,
+            trans_addr: u64,
+            trans_size: u32,
+        }
+
+        let mut data = Data {
+            headr_addr: &mut secret.header as *mut _ as u64,
+            headr_size: size_of_val(&secret.header) as u32,
+            guest_addr: gaddr,
+            guest_size: secret.ciphertext.len() as u32,
+            trans_addr: secret.ciphertext.as_mut_ptr() as u64,
+            trans_size: secret.ciphertext.len() as u32,
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: fw_fd as u32,
+            code: 5, // LaunchSecret
+        };
+
+        self.fd.memory_encrypt(&mut cmd).unwrap();
+        Ok(())
+    }
+
     fn sev_finish(&self, fw_fd: RawFd) -> Result<()> {
         let mut cmd = SevCommand {
             error: 0,
@@ -632,7 +669,17 @@ impl Vm {
         Ok(measurement)
     }
 
-    pub fn setup_memcrypt_finish(&self, fw_fd: RawFd) {
+    pub fn setup_memcrypt_finish(
+        &self,
+        fw_fd: RawFd,
+        secret: sev::launch::Secret,
+        secret_haddr: u64,
+    ) {
+        let len = secret.ciphertext.len() as u32;
+        println!("secret len: {:?}", len);
+        println!("secret: {:?}", secret.ciphertext);
+        self.sev_inject_secret(fw_fd, secret, secret_haddr, len)
+            .unwrap();
         self.sev_finish(fw_fd).unwrap();
     }
 
