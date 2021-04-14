@@ -659,10 +659,14 @@ impl Vm {
         bootldr_size: usize,
         kernel_uaddr: *mut u8,
         kernel_size: usize,
+        initrd_uaddr: *mut u8,
+        initrd_size: usize,
     ) -> Result<sev::launch::Measurement> {
         self.sev_launch_update_data(fw_fd, bootldr_uaddr, bootldr_size)
             .unwrap();
         self.sev_launch_update_data(fw_fd, kernel_uaddr, kernel_size)
+            .unwrap();
+        self.sev_launch_update_data(fw_fd, initrd_uaddr, initrd_size)
             .unwrap();
 
         let measurement = self.sev_launch_measure(fw_fd).unwrap();

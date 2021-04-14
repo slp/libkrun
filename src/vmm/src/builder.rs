@@ -298,6 +298,7 @@ struct SessionResponse {
 }
 
 const CODEBYTES: &[u8] = include_bytes!("/root/src-clean/qboot/build/bios.bin");
+const INITRD: &[u8] = include_bytes!("/root/src-clean/initrd/initrd.gz");
 
 /// Builds and starts a microVM based on the current Firecracker VmResources configuration.
 ///
@@ -355,15 +356,6 @@ pub fn build_microvm(
         chain
     };
 
-    /*
-    // Client creates session and starts the launch.
-    let mut policy = sev::launch::Policy::default();
-    let session = sev::session::Session::try_from(policy).unwrap();
-    let start = session.start(chain).unwrap();
-    let start_json = serde_json::to_string(&start).unwrap();
-    println!("start_json: {}", start_json);
-     */
-
     let response = ureq::post("http://127.0.0.1:8080/session")
         .send_json(ureq::json!(SessionRequest { build, chain }))
         .unwrap()
@@ -392,6 +384,10 @@ pub fn build_microvm(
                 .get_host_address(GuestAddress(kernel_bundle.guest_addr))
                 .unwrap(),
             kernel_bundle.size,
+            guest_memory
+                .get_host_address(GuestAddress(0xA00000))
+                .unwrap(),
+            INITRD.len(),
         )
         .unwrap();
 
@@ -417,6 +413,7 @@ pub fn build_microvm(
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
+    /*
     let serial_device = if cfg!(target_arch = "x86_64")
         || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
     {
@@ -428,8 +425,9 @@ pub fn build_microvm(
     } else {
         None
     };
+    */
 
-    //let serial_device = None;
+    let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -542,8 +540,7 @@ pub fn build_microvm(
         size: arch_memory_info.shm_size as usize,
     });
     #[cfg(target_os = "macos")]*/
-    let shm_region = None;
-
+    //let shm_region = None;
     let mut vmm = Vmm {
         //events_observer: Some(Box::new(SerialStdin::get())),
         guest_memory,
@@ -557,8 +554,10 @@ pub fn build_microvm(
         pio_device_manager,
     };
 
-    attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
-    //attach_console_devices(&mut vmm, event_manager, intc.clone())?;
+    //attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
+    attach_console_devices(&mut vmm, event_manager, intc.clone())?;
+    attach_block_device(&mut vmm, event_manager, intc.clone())?;
+    /*
     attach_fs_devices(
         &mut vmm,
         &vm_resources.fs,
@@ -566,6 +565,7 @@ pub fn build_microvm(
         shm_region,
         intc.clone(),
     )?;
+    */
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc)?;
     }
@@ -639,6 +639,11 @@ pub fn create_guest_memory(
     let bootldr_data = unsafe { std::slice::from_raw_parts(CODEBYTES.as_ptr(), CODEBYTES.len()) };
     guest_mem
         .write(bootldr_data, GuestAddress(0xFFFF_0000 as u64))
+        .unwrap();
+
+    let initrd_data = unsafe { std::slice::from_raw_parts(INITRD.as_ptr(), INITRD.len()) };
+    guest_mem
+        .write(initrd_data, GuestAddress(0xA00000 as u64))
         .unwrap();
 
     Ok((guest_mem, arch_mem_info))
@@ -1085,6 +1090,46 @@ fn attach_balloon_device(
         MmioTransport::new(vmm.guest_memory().clone(), balloon),
     )
     .map_err(RegisterBalloonDevice)?;
+
+    Ok(())
+}
+
+fn attach_block_device(
+    vmm: &mut Vmm,
+    event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let block = Arc::new(Mutex::new(
+        devices::virtio::Block::new(
+            "1".to_string(),
+            None,
+            devices::virtio::CacheType::Writeback,
+            "/root/disk.raw".to_string(),
+            false,
+            false,
+        )
+        .unwrap(),
+    ));
+
+    event_manager
+        .add_subscriber(block.clone())
+        .map_err(RegisterEvent)?;
+
+    let id = String::from(block.lock().unwrap().id());
+
+    if let Some(intc) = intc {
+        block.lock().unwrap().set_intc(intc);
+    }
+
+    // The device mutex mustn't be locked here otherwise it will deadlock.
+    attach_mmio_device(
+        vmm,
+        id,
+        MmioTransport::new(vmm.guest_memory().clone(), block),
+    )
+    .map_err(RegisterBlockDevice)?;
 
     Ok(())
 }
