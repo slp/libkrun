@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+
 
 char DEFAULT_KRUN_INIT[] = "/bin/sh";
 
@@ -48,14 +51,50 @@ void set_rlimits(const char *rlimits)
     }
 }
 
+const char passp[] = "mysecretpassphrase";
+
 int main(int argc, char **argv)
 {
     struct ifreq ifr;
+    int pid;
+    int pipefd[2];
     int sockfd;
     char *hostname;
     char *krun_init;
     char *workdir;
     char *rlimits;
+
+    if (mount("proc", "/proc", "proc",
+              MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL) < 0) {
+        perror("mount(/proc)");
+        exit(-1);
+    }
+
+    pipe(pipefd);
+    pid = fork();
+    if (pid == 0) {
+	    close(pipefd[1]);
+	    dup2(pipefd[0], 0);
+	    close(pipefd[0]);
+
+	    execl("/sbin/cryptsetup", "cryptsetup", "open", "/dev/vda", "luksroot", "-", NULL);
+    } else {
+	    write(pipefd[1], &passp[0], sizeof(passp));
+	    close(pipefd[1]);
+	    waitpid(pid, NULL, 0);
+    }
+
+    if (mount("/dev/mapper/luksroot", "/luksroot", "ext4", 0, NULL) < 0) {
+        perror("mount(/luksroot)");
+        exit(-1);
+    }
+
+    chdir("/luksroot");
+    if (mount(".", "/", NULL, MS_MOVE, NULL)) {
+	    perror("remount root");
+	    exit(-1);
+    }
+    chroot(".");
 
     if (mount("proc", "/proc", "proc",
               MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL) < 0) {
@@ -77,7 +116,6 @@ int main(int argc, char **argv)
 
     if (mkdir("/dev/pts", 0755) != 0) {
         perror("mkdir(/dev/pts)");
-        exit(-1);
     }
 
     if (mount("devpts", "/dev/pts", "devpts",
