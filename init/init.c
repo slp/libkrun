@@ -51,8 +51,6 @@ void set_rlimits(const char *rlimits)
     }
 }
 
-const char passp[] = "mysecretpassphrase";
-
 int main(int argc, char **argv)
 {
     struct ifreq ifr;
@@ -63,6 +61,7 @@ int main(int argc, char **argv)
     char *krun_init;
     char *workdir;
     char *rlimits;
+    char *passp;
 
     if (mount("proc", "/proc", "proc",
               MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL) < 0) {
@@ -79,7 +78,11 @@ int main(int argc, char **argv)
 
 	    execl("/sbin/cryptsetup", "cryptsetup", "open", "/dev/vda", "luksroot", "-", NULL);
     } else {
-	    write(pipefd[1], &passp[0], sizeof(passp));
+	    passp = getenv("KRUN_PASS");
+	    if (passp) {
+		    write(pipefd[1], passp, strnlen(passp, 128));
+	    }
+
 	    close(pipefd[1]);
 	    waitpid(pid, NULL, 0);
     }
