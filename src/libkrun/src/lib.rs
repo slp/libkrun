@@ -62,6 +62,8 @@ struct ContextConfig {
     port_map: Option<HashMap<u16, u16>>,
     #[cfg(feature = "amd-sev")]
     attestation_url: Option<String>,
+    #[cfg(feature = "amd-sev")]
+    image : Option<String>,
 }
 
 impl ContextConfig {
@@ -156,6 +158,16 @@ impl ContextConfig {
     #[cfg(feature = "amd-sev")]
     fn get_attestation_url(&self) -> Option<String> {
         self.attestation_url.clone()
+    }
+
+    #[cfg(feature = "amd-sev")]
+    fn set_image(&mut self, image: String) {
+        self.image = Some(image);
+    }
+
+    #[cfg(feature = "amd-sev")]
+    fn get_image(&self) -> Option<String> {
+        self.image.clone()
     }
 }
 
@@ -586,9 +598,13 @@ pub unsafe extern "C" fn krun_set_exec(
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[cfg(feature = "amd-sev")]
-pub unsafe extern "C" fn krun_set_attestation_url(ctx_id: u32, c_url: *const c_char) -> i32 {
+pub unsafe extern "C" fn krun_set_attestation_url(ctx_id: u32, c_url: *const c_char, c_image: *const c_char) -> i32 {
     let url = match CStr::from_ptr(c_url).to_str() {
         Ok(u) => u,
+        Err(_) => return -libc::EINVAL,
+    };
+    let image = match CStr::from_ptr(c_image).to_str() {
+        Ok(i) => i,
         Err(_) => return -libc::EINVAL,
     };
 
@@ -596,6 +612,7 @@ pub unsafe extern "C" fn krun_set_attestation_url(ctx_id: u32, c_url: *const c_c
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_attestation_url(url.to_string());
+            cfg.set_image(image.to_string());
         }
         Entry::Vacant(_) => return -libc::ENOENT,
     }
@@ -645,6 +662,11 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     if let Some(url) = ctx_cfg.get_attestation_url() {
         ctx_cfg.vmr.set_attestation_url(url);
     }
+    #[cfg(feature = "amd-sev")]
+    if let Some(image) = ctx_cfg.get_attestation_url() {
+        ctx_cfg.vmr.set_image(image);
+    }
+
 
     let mut boot_source = BootSourceConfig::default();
     boot_source.kernel_cmdline_prolog = Some(format!(

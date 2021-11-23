@@ -38,7 +38,7 @@ int main(int argc, char *const argv[])
     int err;
     int i;
 
-    if (argc != 3) {
+    if (argc != 4) {
         printf("Invalid arguments\n");
         printf("Usage: %s DISK_IMAGE ATTESTATION_URL\n", argv[0]);
         return -1;
@@ -108,7 +108,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (err = krun_set_attestation_url(ctx_id, argv[2])) {
+    if (err = krun_set_attestation_url(ctx_id, argv[2], argv[3])) {
         errno = -err;
         perror("Error configuring the attestation server");
         return -1;

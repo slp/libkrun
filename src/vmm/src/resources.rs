@@ -63,6 +63,9 @@ pub struct VmResources {
     /// Base URL for the attestation server.
     #[cfg(feature = "amd-sev")]
     pub attestation_url: Option<String>,
+    #[cfg(feature = "amd-sev")]
+    pub image: Option<String>,
+
 }
 
 impl VmResources {
@@ -204,6 +207,15 @@ impl VmResources {
     #[cfg(feature = "amd-sev")]
     pub fn set_attestation_url(&mut self, url: String) {
         self.attestation_url = Some(url);
+    }
+    #[cfg(feature = "amd-sev")]
+    pub fn image(&self) -> Option<String> {
+        self.image.clone()
+    }
+
+    #[cfg(feature = "amd-sev")]
+    pub fn set_image(&mut self, image: String) {
+        self.image = Some(image);
     }
 }
 

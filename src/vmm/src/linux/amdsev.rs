@@ -140,6 +140,7 @@ fn get_and_store_chain(fw: &mut Firmware) -> Result<certs::Chain, Error> {
 struct SessionRequest {
     build: sev::Build,
     chain: sev::certs::Chain,
+    image: String,
 }
 
 /// Payload received from the attestation server on session request.
@@ -158,19 +159,22 @@ pub struct AmdSev {
 }
 
 impl AmdSev {
-    pub fn new(attestation_url: Option<String>) -> Result<Self, Error> {
+    pub fn new(attestation_url: Option<String>, image: Option<String>) -> Result<Self, Error> {
         let mut fw = Firmware::open().map_err(Error::OpenFirmware)?;
         let chain = get_and_store_chain(&mut fw)?;
         let mut sev_es = false;
-
         let (start, session_id) = if let Some(ref server_url) = attestation_url {
             let build = fw
                 .platform_status()
                 .map_err(|_| Error::PlatformStatus)?
                 .build;
-
+            let image_name = match image{
+                Some(i) => i,
+                None => panic!("No image name provided")
+            };
+            println!("URL: {} image:{}", &server_url, &image_name);
             let response = ureq::post(format!("{}/session", server_url).as_str())
-                .send_json(ureq::json!(SessionRequest { build, chain }))
+                .send_json(ureq::json!(SessionRequest { build, chain, image: image_name }))
                 .map_err(Error::SessionRequest)?
                 .into_string()
                 .unwrap();
@@ -410,7 +414,7 @@ impl AmdSev {
             .map_err(Error::AttestationRequest)?
             .into_string()
             .unwrap();
-
+            println!("XXX secret_resp {}", &secret_resp);
             let secret: Secret =
                 serde_json::from_str(&secret_resp).map_err(Error::ParseAttestationSecret)?;
 

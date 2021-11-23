@@ -159,7 +159,7 @@ int32_t krun_set_exec(uint32_t ctx_id,
  * Returns:
  *  Zero on success or a negative error number on failure.
  */
-int32_t krun_set_attestation_url(uint32_t ctx_id, const char *url);
+int32_t krun_set_attestation_url(uint32_t ctx_id, const char *url, const char *image);
 
 /*
  * Starts and enters the microVM with the configured parameters. The VMM will attempt to take over

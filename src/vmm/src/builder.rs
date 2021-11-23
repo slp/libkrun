@@ -350,7 +350,13 @@ pub fn build_microvm(
     #[cfg(feature = "amd-sev")]
     let attestation_url = vm_resources.attestation_url();
 
-    let mut vm = setup_vm(&guest_memory, attestation_url.clone())?;
+    #[cfg(not(feature = "amd-sev"))]
+    let image = None;
+
+    #[cfg(feature = "amd-sev")]
+    let image = vm_resources.image();
+
+    let mut vm = setup_vm(&guest_memory, attestation_url.clone(), image.clone())?;
 
     #[cfg(feature = "amd-sev")]
     let measured_regions = {
@@ -690,11 +696,12 @@ fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
 pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
     attestation_url: Option<String>,
+    image: Option<String>,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
         .map_err(StartMicrovmError::Internal)?;
-    let mut vm = Vm::new(kvm.fd(), attestation_url)
+    let mut vm = Vm::new(kvm.fd(), attestation_url, image)
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
     vm.memory_init(&guest_memory, kvm.max_memslots())

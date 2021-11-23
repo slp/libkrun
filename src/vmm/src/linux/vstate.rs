@@ -432,7 +432,7 @@ pub struct Vm {
 
 impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
-    pub fn new(kvm: &Kvm, _attestation_url: Option<String>) -> Result<Self> {
+    pub fn new(kvm: &Kvm, _attestation_url: Option<String>, _image: Option<String>) -> Result<Self> {
         //create fd for interacting with kvm-vm specific functions
         let vm_fd = kvm.create_vm().map_err(Error::VmFd)?;
 
@@ -445,7 +445,7 @@ impl Vm {
             arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
 
         #[cfg(feature = "amd-sev")]
-        let sev = AmdSev::new(_attestation_url).map_err(Error::SecVirtInit)?;
+        let sev = AmdSev::new(_attestation_url, _image).map_err(Error::SecVirtInit)?;
 
         Ok(Vm {
             fd: vm_fd,
