@@ -63,7 +63,7 @@ struct ContextConfig {
     #[cfg(feature = "amd-sev")]
     attestation_url: Option<String>,
     #[cfg(feature = "amd-sev")]
-    image : Option<String>,
+    image: Option<String>,
 }
 
 impl ContextConfig {
@@ -598,7 +598,11 @@ pub unsafe extern "C" fn krun_set_exec(
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 #[cfg(feature = "amd-sev")]
-pub unsafe extern "C" fn krun_set_attestation_url(ctx_id: u32, c_url: *const c_char, c_image: *const c_char) -> i32 {
+pub unsafe extern "C" fn krun_set_attestation_url(
+    ctx_id: u32,
+    c_url: *const c_char,
+    c_image: *const c_char,
+) -> i32 {
     let url = match CStr::from_ptr(c_url).to_str() {
         Ok(u) => u,
         Err(_) => return -libc::EINVAL,
@@ -663,10 +667,9 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         ctx_cfg.vmr.set_attestation_url(url);
     }
     #[cfg(feature = "amd-sev")]
-    if let Some(image) = ctx_cfg.get_attestation_url() {
+    if let Some(image) = ctx_cfg.get_image() {
         ctx_cfg.vmr.set_image(image);
     }
-
 
     let mut boot_source = BootSourceConfig::default();
     boot_source.kernel_cmdline_prolog = Some(format!(
