@@ -5,17 +5,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-mod csm;
 mod device;
 mod event_handler;
+mod muxer;
+mod muxer_rxq;
+mod muxer_thread;
 mod packet;
-mod unix;
+mod proxy;
+mod tcp;
+mod udp;
 
 use std::os::unix::io::AsRawFd;
 
 pub use self::defs::uapi::VIRTIO_ID_VSOCK as TYPE_VSOCK;
 pub use self::device::Vsock;
-pub use self::unix::{Error as VsockUnixBackendError, VsockUnixBackend};
 
 use utils::epoll::EventSet;
 use vm_memory::GuestMemoryError;
@@ -28,13 +31,28 @@ mod defs {
     pub const VSOCK_DEV_ID: &str = "vsock";
 
     /// Number of virtio queues.
-    pub const NUM_QUEUES: usize = 3;
+    pub const NUM_QUEUES: usize = 5;
     /// Virtio queue sizes, in number of descriptor chain heads.
     /// There are 3 queues for a virtio device (in this order): RX, TX, Event
     pub const QUEUE_SIZES: &[u16] = &[256; NUM_QUEUES];
 
     /// Max vsock packet data/buffer size.
     pub const MAX_PKT_BUF_SIZE: usize = 64 * 1024;
+
+    /// Maximum number of established connections that we can handle.
+    pub const MAX_CONNECTIONS: usize = 1023;
+
+    /// Size of the muxer RX packet queue.
+    pub const MUXER_RXQ_SIZE: usize = 256;
+
+    /// Size of the muxer connection kill queue.
+    pub const MUXER_KILLQ_SIZE: usize = 128;
+
+    // Kernel side doesn't play nice with us supporting so many bytes
+    //pub const CONN_TX_BUF_SIZE: usize = i32::MAX as usize;
+    pub const CONN_TX_BUF_SIZE: usize = 256 * 1024 * 1024;
+    pub const SOCK_STREAM: u16 = 1;
+    pub const SOCK_DGRAM: u16 = 2;
 
     pub mod uapi {
 
@@ -46,6 +64,8 @@ mod defs {
         pub const VIRTIO_F_IN_ORDER: usize = 35;
         /// The device conforms to the virtio spec version 1.0.
         pub const VIRTIO_F_VERSION_1: u32 = 32;
+        /// The device supports DGRAM.
+        pub const VIRTIO_VSOCK_F_DGRAM: u32 = 0;
 
         /// Virtio vsock device ID.
         /// Defined in `include/uapi/linux/virtio_ids.h`.
@@ -90,6 +110,8 @@ mod defs {
         ///
         /// Stream / connection-oriented packet (the only currently valid type).
         pub const VSOCK_TYPE_STREAM: u16 = 1;
+        pub const VSOCK_TYPE_SEQPACKET: u16 = 2;
+        pub const VSOCK_TYPE_DGRAM: u16 = 3;
 
         pub const VSOCK_HOST_CID: u64 = 2;
 
@@ -123,7 +145,6 @@ pub enum VsockError {
     UnwritableDescriptor,
     /// EventFd error
     EventFd(std::io::Error),
-    VsockUdsBackend(VsockUnixBackendError),
 }
 
 type Result<T> = std::result::Result<T, VsockError>;

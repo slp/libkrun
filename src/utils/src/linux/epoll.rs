@@ -131,7 +131,7 @@ impl EpollEvent {
 }
 
 /// Wrapper over epoll functionality.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Epoll {
     epoll_fd: RawFd,
 }

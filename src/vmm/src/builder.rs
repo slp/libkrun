@@ -19,7 +19,7 @@ use devices::legacy::Gic;
 use devices::legacy::Serial;
 #[cfg(not(feature = "amd-sev"))]
 use devices::virtio::VirtioShmRegion;
-use devices::virtio::{MmioTransport, Vsock, VsockUnixBackend};
+use devices::virtio::{MmioTransport, Vsock};
 
 #[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigwinch_handler;
@@ -1046,7 +1046,7 @@ fn attach_console_devices(
 
 fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
-    unix_vsock: &Arc<Mutex<Vsock<VsockUnixBackend>>>,
+    unix_vsock: &Arc<Mutex<Vsock>>,
     event_manager: &mut EventManager,
     intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {

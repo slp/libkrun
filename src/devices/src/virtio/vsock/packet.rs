@@ -19,6 +19,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::result;
 
+use nix::sys::socket::Ipv4Addr;
 use utils::byte_order;
 use vm_memory::{self, GuestAddress, GuestMemory, GuestMemoryError};
 
@@ -90,6 +91,56 @@ const HDROFF_BUF_ALLOC: usize = 36;
 // belongs). For instance, for our Unix backend, this counter would be the total number of bytes
 // we have successfully written to a backing Unix socket.
 const HDROFF_FWD_CNT: usize = 40;
+
+#[repr(C)]
+pub struct TsiProxyCreate {
+    pub id: u64,
+    pub _type: u16,
+}
+
+#[repr(C)]
+pub struct TsiConnectReq {
+    pub id: u64,
+    pub addr: Ipv4Addr,
+    pub port: u16,
+}
+
+#[repr(C)]
+pub struct TsiConnectRsp {
+    pub result: i32,
+}
+
+#[repr(C)]
+pub struct TsiGetnameReq {
+    pub id: u64,
+    pub peer: u32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiGetnameRsp {
+    pub addr: Ipv4Addr,
+    pub port: u16,
+    pub result: i32,
+}
+
+impl Default for TsiGetnameRsp {
+    fn default() -> Self {
+        TsiGetnameRsp {
+            addr: Ipv4Addr::new(0, 0, 0, 0),
+            port: 0,
+            result: -1,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiSendtoAddr {
+    pub id: u64,
+    pub addr: Ipv4Addr,
+    pub port: u16,
+}
 
 /// The vsock packet, implemented as a wrapper over a virtq descriptor chain:
 /// - the chain head, holding the packet header; and
@@ -371,6 +422,77 @@ impl VsockPacket {
             let cstr =
                 unsafe { CStr::from_ptr(&self.buf().unwrap()[2] as *const _ as *const c_char) };
             cstr.to_str().ok()
+        } else {
+            None
+        }
+    }
+
+    pub fn read_proxy_create(&self) -> Option<TsiProxyCreate> {
+        if self.buf_size >= 10 {
+            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
+            let _type: u16 = byte_order::read_le_u16(&self.buf().unwrap()[8..]);
+
+            Some(TsiProxyCreate { id, _type })
+        } else {
+            None
+        }
+    }
+
+    pub fn read_connect_req(&self) -> Option<TsiConnectReq> {
+        if self.buf_size >= 14 {
+            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
+            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[12..]);
+
+            let ptr = &self.buf().unwrap()[8];
+            let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
+            let addr = Ipv4Addr::new(slice[0], slice[1], slice[2], slice[3]);
+
+            Some(TsiConnectReq { id, addr, port })
+        } else {
+            None
+        }
+    }
+
+    pub fn write_connect_rsp(&mut self, rsp: TsiConnectRsp) {
+        if self.buf_size >= 4 {
+            if let Some(buf) = self.buf_mut() {
+                byte_order::write_le_u32(&mut buf[0..], rsp.result as u32);
+            }
+        }
+    }
+
+    pub fn read_getname_req(&self) -> Option<TsiGetnameReq> {
+        if self.buf_size >= 12 {
+            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
+            let peer: u32 = byte_order::read_le_u32(&self.buf().unwrap()[8..]);
+            Some(TsiGetnameReq { id, peer })
+        } else {
+            None
+        }
+    }
+
+    pub fn write_getname_rsp(&mut self, rsp: TsiGetnameRsp) {
+        if self.buf_size >= 10 {
+            if let Some(buf) = self.buf_mut() {
+                for (i, b) in rsp.addr.octets().iter().enumerate() {
+                    buf[i] = *b;
+                }
+                byte_order::write_be_u16(&mut buf[4..], rsp.port);
+                byte_order::write_le_u32(&mut buf[6..], rsp.result as u32);
+            }
+        }
+    }
+
+    pub fn read_sendto_addr(&self) -> Option<TsiSendtoAddr> {
+        if self.buf_size >= 14 {
+            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
+            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[12..]);
+
+            let ptr = &self.buf().unwrap()[8];
+            let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
+            let addr = Ipv4Addr::new(slice[0], slice[1], slice[2], slice[3]);
+
+            Some(TsiSendtoAddr { id, addr, port })
         } else {
             None
         }

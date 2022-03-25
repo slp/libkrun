@@ -27,14 +27,11 @@ use std::os::unix::io::AsRawFd;
 use polly::event_manager::{EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
 
-use super::device::{Vsock, EVQ_INDEX, RXQ_INDEX, TXQ_INDEX};
+use super::device::{Vsock, DRQ_INDEX, DTQ_INDEX, EVQ_INDEX, RXQ_INDEX, TXQ_INDEX};
 use super::VsockBackend;
 use crate::virtio::VirtioDevice;
 
-impl<B> Vsock<B>
-where
-    B: VsockBackend + 'static,
-{
+impl Vsock {
     pub(crate) fn handle_rxq_event(&mut self, event: &EpollEvent) -> bool {
         debug!("vsock: RX queue event");
 
@@ -47,8 +44,8 @@ where
         let mut raise_irq = false;
         if let Err(e) = self.queue_events[RXQ_INDEX].read() {
             error!("Failed to get vsock rx queue event: {:?}", e);
-        } else if self.backend.has_pending_rx() {
-            raise_irq |= self.process_rx();
+        } else {
+            raise_irq |= self.process_stream_rx();
         }
         raise_irq
     }
@@ -66,12 +63,54 @@ where
         if let Err(e) = self.queue_events[TXQ_INDEX].read() {
             error!("Failed to get vsock tx queue event: {:?}", e);
         } else {
-            raise_irq |= self.process_tx();
+            raise_irq |= self.process_stream_tx();
             // The backend may have queued up responses to the packets we sent during
             // TX queue processing. If that happened, we need to fetch those responses
             // and place them into RX buffers.
-            if self.backend.has_pending_rx() {
-                raise_irq |= self.process_rx();
+            if self.muxer.has_pending_stream_rx() {
+                raise_irq |= self.process_stream_rx();
+            }
+        }
+        raise_irq
+    }
+
+    pub(crate) fn handle_drq_event(&mut self, event: &EpollEvent) -> bool {
+        debug!("vsock: DR queue event");
+
+        let event_set = event.event_set();
+        if event_set != EventSet::IN {
+            warn!("vsock: drq unexpected event {:?}", event_set);
+            return false;
+        }
+
+        let mut raise_irq = false;
+        if let Err(e) = self.queue_events[DRQ_INDEX].read() {
+            error!("Failed to get vsock dr queue event: {:?}", e);
+        } else {
+            raise_irq |= self.process_dgram_rx();
+        }
+        raise_irq
+    }
+
+    pub(crate) fn handle_dtq_event(&mut self, event: &EpollEvent) -> bool {
+        debug!("vsock: DT queue event");
+
+        let event_set = event.event_set();
+        if event_set != EventSet::IN {
+            warn!("vsock: dtq unexpected event {:?}", event_set);
+            return false;
+        }
+
+        let mut raise_irq = false;
+        if let Err(e) = self.queue_events[DTQ_INDEX].read() {
+            error!("Failed to get vsock DT queue event: {:?}", e);
+        } else {
+            raise_irq |= self.process_dgram_tx();
+            // The backend may have queued up responses to the packets we sent during
+            // TX queue processing. If that happened, we need to fetch those responses
+            // and place them into RX buffers.
+            if self.muxer.has_pending_dgram_rx() {
+                raise_irq |= self.process_dgram_rx();
             }
         }
         raise_irq
@@ -95,6 +134,7 @@ where
     fn notify_backend(&mut self, event: &EpollEvent) -> bool {
         debug!("vsock: backend event");
 
+        /*
         self.backend.notify(event.event_set());
         // After the backend has been kicked, it might've freed up some resources, so we
         // can attempt to send it more data to process.
@@ -106,6 +146,8 @@ where
             raise_irq |= self.process_rx();
         }
         raise_irq
+         */
+        false
     }
 
     fn handle_activate_event(&self, event_manager: &mut EventManager) {
@@ -148,6 +190,32 @@ where
 
         event_manager
             .register(
+                self.queue_events[DRQ_INDEX].as_raw_fd(),
+                EpollEvent::new(
+                    EventSet::IN,
+                    self.queue_events[DRQ_INDEX].as_raw_fd() as u64,
+                ),
+                self_subscriber.clone(),
+            )
+            .unwrap_or_else(|e| {
+                error!("Failed to register vsock rxq with event manager: {:?}", e);
+            });
+
+        event_manager
+            .register(
+                self.queue_events[DTQ_INDEX].as_raw_fd(),
+                EpollEvent::new(
+                    EventSet::IN,
+                    self.queue_events[DTQ_INDEX].as_raw_fd() as u64,
+                ),
+                self_subscriber.clone(),
+            )
+            .unwrap_or_else(|e| {
+                error!("Failed to register vsock txq with event manager: {:?}", e);
+            });
+
+        event_manager
+            .register(
                 self.queue_events[EVQ_INDEX].as_raw_fd(),
                 EpollEvent::new(
                     EventSet::IN,
@@ -159,6 +227,7 @@ where
                 error!("Failed to register vsock evq with event manager: {:?}", e);
             });
 
+        /*
         event_manager
             .register(
                 self.backend.as_raw_fd(),
@@ -171,6 +240,7 @@ where
             .unwrap_or_else(|e| {
                 error!("Failed to register vsock backend events: {:?}", e);
             });
+        */
 
         event_manager
             .unregister(self.activate_evt.as_raw_fd())
@@ -180,16 +250,15 @@ where
     }
 }
 
-impl<B> Subscriber for Vsock<B>
-where
-    B: VsockBackend + 'static,
-{
+impl Subscriber for Vsock {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
         let source = event.fd();
         let rxq = self.queue_events[RXQ_INDEX].as_raw_fd();
         let txq = self.queue_events[TXQ_INDEX].as_raw_fd();
+        let drq = self.queue_events[DRQ_INDEX].as_raw_fd();
+        let dtq = self.queue_events[DTQ_INDEX].as_raw_fd();
         let evq = self.queue_events[EVQ_INDEX].as_raw_fd();
-        let backend = self.backend.as_raw_fd();
+        //let backend = self.backend.as_raw_fd();
         let activate_evt = self.activate_evt.as_raw_fd();
 
         if self.is_activated() {
@@ -197,16 +266,21 @@ where
             match source {
                 _ if source == rxq => raise_irq = self.handle_rxq_event(event),
                 _ if source == txq => raise_irq = self.handle_txq_event(event),
+                _ if source == drq => raise_irq = self.handle_drq_event(event),
+                _ if source == dtq => raise_irq = self.handle_dtq_event(event),
                 _ if source == evq => raise_irq = self.handle_evq_event(event),
+                /*
                 _ if source == backend => {
                     raise_irq = self.notify_backend(event);
                 }
+                */
                 _ if source == activate_evt => {
                     self.handle_activate_event(event_manager);
                 }
                 _ => warn!("Unexpected vsock event received: {:?}", source),
             }
             if raise_irq {
+                debug!("raising IRQ");
                 self.signal_used_queue().unwrap_or_default();
             }
         } else {

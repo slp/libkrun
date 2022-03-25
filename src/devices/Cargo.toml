@@ -11,6 +11,7 @@ amd-sev = []
 bitflags = "1.2.0"
 libc = ">=0.2.39"
 lru = "0.6.3"
+nix = "0.23.0"
 vm-memory = { version = "0.7.0", features = ["backend-mmap"] }
 
 arch = { path = "../arch" }
