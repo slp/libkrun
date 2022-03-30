@@ -21,7 +21,8 @@ use super::defs;
 use super::defs::uapi;
 use super::muxer::MuxerRx;
 use super::packet::{
-    TsiConnectReq, TsiConnectRsp, TsiGetnameReq, TsiGetnameRsp, TsiProxyCreate, VsockPacket,
+    TsiAcceptRsp, TsiConnectReq, TsiConnectRsp, TsiGetnameReq, TsiGetnameRsp, TsiListenRsp,
+    TsiProxyCreate, VsockPacket,
 };
 
 /// The muxer RX queue.
@@ -157,26 +158,36 @@ pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
             result,
         } => {
             pkt.set_op(uapi::VSOCK_OP_RW)
-                .set_src_cid(cid)
-                .set_dst_cid(uapi::VSOCK_HOST_CID)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
                 .set_src_port(local_port)
                 .set_dst_port(peer_port)
                 .set_type(uapi::VSOCK_TYPE_DGRAM);
 
-            println!(
-                "muxer: ConnResponse: local_port: {}, peer_port: {}, result: {}",
-                local_port, peer_port, result
-            );
             pkt.write_connect_rsp(TsiConnectRsp { result });
             pkt.set_len(pkt.buf().unwrap().len() as u32);
+        }
+        MuxerRx::OpRequest {
+            local_port,
+            peer_port,
+        } => {
+            pkt.set_op(uapi::VSOCK_OP_REQUEST)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
+                .set_src_port(local_port)
+                .set_dst_port(peer_port)
+                .set_type(uapi::VSOCK_TYPE_STREAM)
+                .set_buf_alloc(defs::CONN_TX_BUF_SIZE as u32);
+
+            pkt.set_len(0);
         }
         MuxerRx::OpResponse {
             local_port,
             peer_port,
         } => {
             pkt.set_op(uapi::VSOCK_OP_RESPONSE)
-                .set_src_cid(cid)
-                .set_dst_cid(uapi::VSOCK_HOST_CID)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
                 .set_src_port(local_port)
                 .set_dst_port(peer_port)
                 .set_type(uapi::VSOCK_TYPE_STREAM)
@@ -190,8 +201,8 @@ pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
             data,
         } => {
             pkt.set_op(uapi::VSOCK_OP_RW)
-                .set_src_cid(cid)
-                .set_dst_cid(uapi::VSOCK_HOST_CID)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
                 .set_src_port(local_port)
                 .set_dst_port(peer_port)
                 .set_type(uapi::VSOCK_TYPE_DGRAM);
@@ -205,8 +216,8 @@ pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
             fwd_cnt,
         } => {
             pkt.set_op(uapi::VSOCK_OP_CREDIT_REQUEST)
-                .set_src_cid(cid)
-                .set_dst_cid(uapi::VSOCK_HOST_CID)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
                 .set_src_port(local_port)
                 .set_dst_port(peer_port)
                 .set_type(uapi::VSOCK_TYPE_STREAM)
@@ -219,13 +230,44 @@ pub fn rx_to_pkt(cid: u64, rx: MuxerRx, pkt: &mut VsockPacket) {
             fwd_cnt,
         } => {
             pkt.set_op(uapi::VSOCK_OP_CREDIT_UPDATE)
-                .set_src_cid(cid)
-                .set_dst_cid(uapi::VSOCK_HOST_CID)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
                 .set_src_port(local_port)
                 .set_dst_port(peer_port)
                 .set_type(uapi::VSOCK_TYPE_STREAM)
                 .set_buf_alloc(defs::CONN_TX_BUF_SIZE as u32)
                 .set_fwd_cnt(fwd_cnt);
+        }
+        MuxerRx::ListenResponse {
+            local_port,
+            peer_port,
+            result,
+        } => {
+            pkt.set_op(uapi::VSOCK_OP_RW)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
+                .set_src_port(local_port)
+                .set_dst_port(peer_port)
+                .set_type(uapi::VSOCK_TYPE_DGRAM);
+
+            pkt.write_listen_rsp(TsiListenRsp { result });
+            pkt.set_len(pkt.buf().unwrap().len() as u32);
+        }
+        MuxerRx::AcceptResponse {
+            local_port,
+            peer_port,
+            new_id,
+            result,
+        } => {
+            pkt.set_op(uapi::VSOCK_OP_RW)
+                .set_src_cid(uapi::VSOCK_HOST_CID)
+                .set_dst_cid(cid)
+                .set_src_port(local_port)
+                .set_dst_port(peer_port)
+                .set_type(uapi::VSOCK_TYPE_DGRAM);
+
+            pkt.write_accept_rsp(TsiAcceptRsp { result });
+            pkt.set_len(pkt.buf().unwrap().len() as u32);
         }
     }
 }

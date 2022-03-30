@@ -54,6 +54,9 @@ mod defs {
     pub const SOCK_STREAM: u16 = 1;
     pub const SOCK_DGRAM: u16 = 2;
 
+    /// Misc
+    pub const TSI_PROXY_PORT: u32 = 620;
+
     pub mod uapi {
 
         /// Virtio feature flags.

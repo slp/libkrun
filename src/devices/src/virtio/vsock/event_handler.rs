@@ -110,6 +110,7 @@ impl Vsock {
             // TX queue processing. If that happened, we need to fetch those responses
             // and place them into RX buffers.
             if self.muxer.has_pending_dgram_rx() {
+                debug!("vsock: DT something pending");
                 raise_irq |= self.process_dgram_rx();
             }
         }

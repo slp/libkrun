@@ -42,6 +42,10 @@ pub enum MuxerRx {
         peer_port: u32,
         result: i32,
     },
+    OpRequest {
+        local_port: u32,
+        peer_port: u32,
+    },
     OpResponse {
         local_port: u32,
         peer_port: u32,
@@ -56,18 +60,30 @@ pub enum MuxerRx {
         peer_port: u32,
         fwd_cnt: u32,
     },
+    ListenResponse {
+        local_port: u32,
+        peer_port: u32,
+        result: i32,
+    },
+    AcceptResponse {
+        local_port: u32,
+        peer_port: u32,
+        new_id: u64,
+        result: i32,
+    },
 }
 
 pub struct VsockMuxer {
     cid: u64,
+    queue_rx: Option<Arc<Mutex<VirtQueue>>>,
+    queue_dr: Option<Arc<Mutex<VirtQueue>>>,
+    mem: Option<GuestMemoryMmap>,
     rxq_stream: Arc<Mutex<MuxerRxQ>>,
     rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     epoll: Epoll,
     interrupt_evt: EventFd,
     interrupt_status: Arc<AtomicUsize>,
     proxy_map: ProxyMap,
-    //tcp_proxy_map: TcpProxyMap,
-    //udp_proxy_map: UdpProxyMap,
 }
 
 impl VsockMuxer {
@@ -78,14 +94,15 @@ impl VsockMuxer {
     ) -> Self {
         VsockMuxer {
             cid,
+            queue_rx: None,
+            queue_dr: None,
+            mem: None,
             rxq_stream: Arc::new(Mutex::new(MuxerRxQ::new())),
             rxq_dgram: Arc::new(Mutex::new(MuxerRxQ::new())),
             epoll: Epoll::new().unwrap(),
             interrupt_evt,
             interrupt_status,
             proxy_map: Arc::new(RwLock::new(HashMap::new())),
-            //tcp_proxy_map: Arc::new(RwLock::new(HashMap::new())),
-            //udp_proxy_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -95,11 +112,15 @@ impl VsockMuxer {
         queue_rx: Arc<Mutex<VirtQueue>>,
         queue_dr: Arc<Mutex<VirtQueue>>,
     ) {
+        self.queue_rx = Some(queue_rx.clone());
+        self.queue_dr = Some(queue_dr.clone());
+        self.mem = Some(mem.clone());
+
         let thread = MuxerThread::new(
+            self.cid,
             self.epoll.clone(),
             self.rxq_stream.clone(),
-            //self.tcp_proxy_map.clone(),
-            //self.udp_proxy_map.clone(),
+            self.rxq_dgram.clone(),
             self.proxy_map.clone(),
             mem,
             queue_rx,
@@ -160,6 +181,25 @@ impl VsockMuxer {
         }
     }
 
+    fn send_accept_rsp(&self, id: u64, parent_id: u64) {
+        let mem = match self.mem.as_ref() {
+            Some(m) => m,
+            None => panic!("send_accept_rsp without mem"),
+        };
+
+        let queue = match self.queue_dr.as_ref() {
+            Some(q) => q,
+            None => panic!("send_accept_rsp without queue_dr"),
+        };
+
+        let update = self.proxy_map.read().unwrap().get(&parent_id).map(|proxy| {
+            proxy
+                .lock()
+                .unwrap()
+                .push_accept_rsp(id, 0, &mut queue.lock().unwrap(), mem)
+        });
+    }
+
     pub(crate) fn send_stream_pkt(&mut self, pkt: &VsockPacket) -> super::Result<()> {
         debug!(
             "vsock: send_pkt: src_port={} dst_port={}, op={}",
@@ -179,11 +219,29 @@ impl VsockMuxer {
         match pkt.op() {
             uapi::VSOCK_OP_REQUEST => {
                 debug!("vsock: OP_REQUEST");
+                let id: u64 = (pkt.src_port() as u64) << 32 | pkt.dst_port() as u64;
                 self.proxy_map
                     .read()
                     .unwrap()
-                    .get(&(pkt.src_port() as u64))
+                    .get(&id)
                     .map(|proxy| proxy.lock().unwrap().confirm_connect(pkt));
+            }
+            uapi::VSOCK_OP_RESPONSE => {
+                debug!("vsock: OP_RESPONSE");
+                let id: u64 = (pkt.src_port() as u64) << 32 | pkt.dst_port() as u64;
+                let update = self
+                    .proxy_map
+                    .read()
+                    .unwrap()
+                    .get(&id)
+                    .map(|proxy| proxy.lock().unwrap().process_op_response(pkt));
+                update
+                    .as_ref()
+                    .and_then(|u| u.push_accept)
+                    .map(|(id, parent_id)| self.send_accept_rsp(id, parent_id));
+                update
+                    .and_then(|u| u.polling)
+                    .map(|p| self.update_polling(p.0, p.1, p.2));
             }
             uapi::VSOCK_OP_SHUTDOWN => {
                 debug!("vsock: OP_SHUTDOWN");
@@ -195,10 +253,13 @@ impl VsockMuxer {
             }
             uapi::VSOCK_OP_RW => {
                 debug!("vsock: OP_RW");
-                if let Some(proxy_lock) =
-                    self.proxy_map.read().unwrap().get(&(pkt.src_port() as u64))
-                {
-                    debug!("vsock: allowing OP_RW for {}", pkt.src_port());
+                let id: u64 = (pkt.src_port() as u64) << 32 | pkt.dst_port() as u64;
+                if let Some(proxy_lock) = self.proxy_map.read().unwrap().get(&id) {
+                    debug!(
+                        "vsock: allowing OP_RW: src={} dst={}",
+                        pkt.src_port(),
+                        pkt.dst_port()
+                    );
                     let mut proxy = proxy_lock.lock().unwrap();
                     proxy.sendmsg(pkt);
                 } else {
@@ -211,18 +272,19 @@ impl VsockMuxer {
             }
             uapi::VSOCK_OP_CREDIT_UPDATE => {
                 debug!("vsock: OP_CREDIT_UPDATE");
+                let id: u64 = (pkt.src_port() as u64) << 32 | pkt.dst_port() as u64;
                 let update = self
                     .proxy_map
                     .read()
                     .unwrap()
-                    .get(&(pkt.src_port() as u64))
+                    .get(&id)
                     .map(|proxy| proxy.lock().unwrap().update_peer_credit(pkt));
 
                 update
                     .and_then(|u| u.polling)
                     .map(|p| self.update_polling(p.0, p.1, p.2));
             }
-            _ => error!("stream: unhandled op={}", pkt.op()),
+            _ => warn!("stream: unhandled op={}", pkt.op()),
         }
         Ok(())
     }
@@ -246,15 +308,18 @@ impl VsockMuxer {
             debug!("vsock: proxy create request");
             if let Some(req) = pkt.read_proxy_create() {
                 debug!(
-                    "vsock: proxy create request: id={}, type={}",
-                    req.id, req._type
+                    "vsock: proxy create request: peer_port={}, type={}",
+                    req.peer_port, req._type
                 );
                 match req._type {
                     defs::SOCK_STREAM => {
                         debug!("vsock: proxy create stream");
+                        let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
                         TcpProxy::new(
-                            req.id,
+                            id,
                             self.cid,
+                            defs::TSI_PROXY_PORT,
+                            req.peer_port,
                             pkt.src_port(),
                             self.rxq_stream.clone(),
                             self.rxq_dgram.clone(),
@@ -263,17 +328,18 @@ impl VsockMuxer {
                             self.proxy_map
                                 .write()
                                 .unwrap()
-                                .insert(req.id, Mutex::new(Box::new(proxy)))
+                                .insert(id, Mutex::new(Box::new(proxy)))
                         })
                         .map_err(|e| debug!("vsock: error creating socket: {}", e));
                     }
                     defs::SOCK_DGRAM => {
                         debug!("vsock: proxy create dgram");
+                        let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
                         UdpProxy::new(
-                            req.id,
+                            id,
                             self.cid,
+                            req.peer_port,
                             pkt.src_port(),
-                            pkt.dst_port(),
                             self.epoll.clone(),
                             self.rxq_dgram.clone(),
                         )
@@ -281,7 +347,7 @@ impl VsockMuxer {
                             self.proxy_map
                                 .write()
                                 .unwrap()
-                                .insert(req.id, Mutex::new(Box::new(proxy)))
+                                .insert(id, Mutex::new(Box::new(proxy)))
                         })
                         .map_err(|e| debug!("vsock: error creating socket: {}", e));
                     }
@@ -291,12 +357,13 @@ impl VsockMuxer {
         } else if pkt.dst_port() == 1025 {
             debug!("vsock: proxy connect request");
             if let Some(req) = pkt.read_connect_req() {
-                debug!("vsock: proxy connect request: id={}", req.id);
+                let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+                debug!("vsock: proxy connect request: id={}", id);
                 let update = self
                     .proxy_map
                     .read()
                     .unwrap()
-                    .get(&req.id)
+                    .get(&id)
                     .map(|proxy| proxy.lock().unwrap().connect(pkt, req));
 
                 update
@@ -306,29 +373,68 @@ impl VsockMuxer {
         } else if pkt.dst_port() == 1026 {
             debug!("vsock: new getname request");
             if let Some(req) = pkt.read_getname_req() {
+                let id = (req.peer_port as u64) << 32 | (req.local_port as u64);
+                debug!(
+                    "vsock: new getname request: id={}, peer_port={}, local_port={}",
+                    id, req.peer_port, req.local_port
+                );
                 self.proxy_map
                     .read()
                     .unwrap()
-                    .get(&req.id)
+                    .get(&id)
                     .map(|proxy| proxy.lock().unwrap().getpeername(pkt, req));
             }
         } else if pkt.dst_port() == 1027 {
             debug!("vsock: new DGRAM sendto addr: src={}", pkt.src_port());
             if let Some(req) = pkt.read_sendto_addr() {
-                debug!("vsock: new DGRAM sendto addr: id={}", req.id);
+                let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+                debug!("vsock: new DGRAM sendto addr: id={}", id);
                 self.proxy_map
                     .read()
                     .unwrap()
-                    .get(&req.id)
+                    .get(&id)
                     .map(|proxy| proxy.lock().unwrap().sendto_addr(req));
             }
         } else if pkt.dst_port() == 1028 {
-            debug!("vsock: DGRAM sendto data: src={}", pkt.src_port());
+            let id = (pkt.src_port() as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+            debug!("vsock: DGRAM sendto data: id={} src={}", id, pkt.src_port());
             self.proxy_map
                 .read()
                 .unwrap()
-                .get(&(pkt.src_port() as u64))
+                .get(&id)
                 .map(|proxy| proxy.lock().unwrap().sendto_data(pkt));
+        } else if pkt.dst_port() == 1029 {
+            debug!("vsock: DGRAM listen request: src={}", pkt.src_port());
+            if let Some(req) = pkt.read_listen_req() {
+                let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+                debug!("vsock: DGRAM listen request: id={}", id);
+                let update = self
+                    .proxy_map
+                    .read()
+                    .unwrap()
+                    .get(&id)
+                    .map(|proxy| proxy.lock().unwrap().listen(pkt, req));
+
+                update
+                    .and_then(|u| u.polling)
+                    .map(|p| self.update_polling(p.0, p.1, p.2));
+            }
+        } else if pkt.dst_port() == 1030 {
+            debug!("vsock: DGRAM accept request: src={}", pkt.src_port());
+            if let Some(req) = pkt.read_accept_req() {
+                let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+                debug!("vsock: DGRAM accept request: id={}", id);
+                let update = self
+                    .proxy_map
+                    .read()
+                    .unwrap()
+                    .get(&id)
+                    .map(|proxy| proxy.lock().unwrap().accept(pkt, req));
+
+                update
+                    .and_then(|u| u.polling)
+                    .map(|p| self.update_polling(p.0, p.1, p.2));
+            }
         } else {
             if pkt.op() == uapi::VSOCK_OP_RW {
                 debug!("vsock: DGRAM OP_RW");

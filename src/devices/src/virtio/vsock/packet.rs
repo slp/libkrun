@@ -94,13 +94,13 @@ const HDROFF_FWD_CNT: usize = 40;
 
 #[repr(C)]
 pub struct TsiProxyCreate {
-    pub id: u64,
+    pub peer_port: u32,
     pub _type: u16,
 }
 
 #[repr(C)]
 pub struct TsiConnectReq {
-    pub id: u64,
+    pub peer_port: u32,
     pub addr: Ipv4Addr,
     pub port: u16,
 }
@@ -112,7 +112,8 @@ pub struct TsiConnectRsp {
 
 #[repr(C)]
 pub struct TsiGetnameReq {
-    pub id: u64,
+    pub peer_port: u32,
+    pub local_port: u32,
     pub peer: u32,
 }
 
@@ -137,9 +138,38 @@ impl Default for TsiGetnameRsp {
 #[repr(C)]
 #[derive(Debug)]
 pub struct TsiSendtoAddr {
-    pub id: u64,
+    pub peer_port: u32,
     pub addr: Ipv4Addr,
     pub port: u16,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiListenReq {
+    pub peer_port: u32,
+    pub addr: Ipv4Addr,
+    pub port: u16,
+    pub vm_port: u32,
+    pub backlog: i32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiListenRsp {
+    pub result: i32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiAcceptReq {
+    pub peer_port: u32,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TsiAcceptRsp {
+    pub result: i32,
 }
 
 /// The vsock packet, implemented as a wrapper over a virtq descriptor chain:
@@ -428,26 +458,30 @@ impl VsockPacket {
     }
 
     pub fn read_proxy_create(&self) -> Option<TsiProxyCreate> {
-        if self.buf_size >= 10 {
-            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
-            let _type: u16 = byte_order::read_le_u16(&self.buf().unwrap()[8..]);
+        if self.buf_size >= 6 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let _type: u16 = byte_order::read_le_u16(&self.buf().unwrap()[4..]);
 
-            Some(TsiProxyCreate { id, _type })
+            Some(TsiProxyCreate { peer_port, _type })
         } else {
             None
         }
     }
 
     pub fn read_connect_req(&self) -> Option<TsiConnectReq> {
-        if self.buf_size >= 14 {
-            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
-            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[12..]);
+        if self.buf_size >= 10 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[8..]);
 
-            let ptr = &self.buf().unwrap()[8];
+            let ptr = &self.buf().unwrap()[4];
             let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
             let addr = Ipv4Addr::new(slice[0], slice[1], slice[2], slice[3]);
 
-            Some(TsiConnectReq { id, addr, port })
+            Some(TsiConnectReq {
+                peer_port,
+                addr,
+                port,
+            })
         } else {
             None
         }
@@ -463,9 +497,14 @@ impl VsockPacket {
 
     pub fn read_getname_req(&self) -> Option<TsiGetnameReq> {
         if self.buf_size >= 12 {
-            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let local_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[4..]);
             let peer: u32 = byte_order::read_le_u32(&self.buf().unwrap()[8..]);
-            Some(TsiGetnameReq { id, peer })
+            Some(TsiGetnameReq {
+                peer_port,
+                local_port,
+                peer,
+            })
         } else {
             None
         }
@@ -484,17 +523,72 @@ impl VsockPacket {
     }
 
     pub fn read_sendto_addr(&self) -> Option<TsiSendtoAddr> {
-        if self.buf_size >= 14 {
-            let id: u64 = byte_order::read_le_u64(&self.buf().unwrap()[0..]);
-            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[12..]);
+        if self.buf_size >= 10 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[8..]);
 
-            let ptr = &self.buf().unwrap()[8];
+            let ptr = &self.buf().unwrap()[4];
             let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
             let addr = Ipv4Addr::new(slice[0], slice[1], slice[2], slice[3]);
 
-            Some(TsiSendtoAddr { id, addr, port })
+            Some(TsiSendtoAddr {
+                peer_port,
+                addr,
+                port,
+            })
         } else {
             None
+        }
+    }
+
+    pub fn read_listen_req(&self) -> Option<TsiListenReq> {
+        if self.buf_size >= 18 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+
+            let ptr = &self.buf().unwrap()[4];
+            let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
+            let addr = Ipv4Addr::new(slice[0], slice[1], slice[2], slice[3]);
+
+            let port: u16 = byte_order::read_be_u16(&self.buf().unwrap()[8..]);
+            let vm_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[10..]);
+            let backlog: u32 = byte_order::read_le_u32(&self.buf().unwrap()[14..]);
+
+            Some(TsiListenReq {
+                peer_port,
+                addr,
+                port,
+                vm_port,
+                backlog: backlog as i32,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn write_listen_rsp(&mut self, rsp: TsiListenRsp) {
+        if self.buf_size >= 4 {
+            if let Some(buf) = self.buf_mut() {
+                byte_order::write_le_u32(&mut buf[0..], rsp.result as u32);
+            }
+        }
+    }
+
+    pub fn read_accept_req(&self) -> Option<TsiAcceptReq> {
+        if self.buf_size >= 8 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let flags: u32 = byte_order::read_le_u32(&self.buf().unwrap()[4..]);
+
+            Some(TsiAcceptReq { peer_port, flags })
+        } else {
+            None
+        }
+    }
+
+    pub fn write_accept_rsp(&mut self, rsp: TsiAcceptRsp) {
+        if self.buf_size >= 4 {
+            if let Some(buf) = self.buf_mut() {
+                byte_order::write_le_u32(&mut buf[0..], rsp.result as u32);
+            }
         }
     }
 }
