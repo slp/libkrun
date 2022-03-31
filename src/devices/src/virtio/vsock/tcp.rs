@@ -17,7 +17,7 @@ use super::muxer::MuxerRx;
 use super::muxer_rxq::MuxerRxQ;
 use super::packet::{
     TsiAcceptReq, TsiAcceptRsp, TsiConnectReq, TsiConnectRsp, TsiGetnameReq, TsiGetnameRsp,
-    TsiListenReq, VsockPacket,
+    TsiListenReq, TsiSendtoAddr, VsockPacket,
 };
 use super::proxy::{Proxy, ProxyError, ProxyStatus, ProxyUpdate};
 use utils::epoll::EventSet;
@@ -165,8 +165,8 @@ impl TcpProxy {
                         .lock()
                         .unwrap()
                         .push(MuxerRx::CreditRequest {
-                            local_port: pkt.src_port(),
-                            peer_port: pkt.dst_port(),
+                            local_port: self.local_port,
+                            peer_port: self.peer_port,
                             fwd_cnt: self.tx_cnt.0,
                         });
                 }
@@ -263,8 +263,8 @@ impl TcpProxy {
                     self.init_data_pkt(&mut pkt);
                     pkt.set_op(uapi::VSOCK_OP_RST).set_len(0);
                     debug!(
-                        "tcp: reset: id: {}, local_port: {}",
-                        self.id, self.local_port
+                        "tcp: reset: id: {}, peer_port: {}, local_port: {}",
+                        self.id, self.peer_port, self.local_port
                     );
                     queue_rx.add_used(mem, head.index, pkt.hdr().len() as u32);
                 }
@@ -348,19 +348,20 @@ impl Proxy for TcpProxy {
     fn getpeername(&mut self, pkt: &VsockPacket, req: TsiGetnameReq) {
         debug!("getpeername: id={}", self.id);
 
-        let name = getpeername(self.fd).unwrap();
-        let (ipv4, port) = match name {
-            SockAddr::Inet(iaddr) => match iaddr.ip() {
-                IpAddr::V4(ipv4) => (ipv4, iaddr.port()),
-                _ => panic!("IPv6 is not yet supported"),
+        let (result, addr, port) = match getpeername(self.fd) {
+            Ok(name) => match name {
+                SockAddr::Inet(iaddr) => match iaddr.ip() {
+                    IpAddr::V4(ipv4) => (0, ipv4, iaddr.port()),
+                    _ => (-libc::EINVAL, Ipv4Addr::new(0, 0, 0, 0), 0),
+                },
+                _ => (-libc::EINVAL, Ipv4Addr::new(0, 0, 0, 0), 0),
             },
-            _ => panic!("unknown SockAddr family"),
+            Err(e) => (-(e as i32), Ipv4Addr::new(0, 0, 0, 0), 0),
         };
-        let data = TsiGetnameRsp {
-            addr: ipv4,
-            port,
-            result: 0,
-        };
+
+        let data = TsiGetnameRsp { addr, port, result };
+
+        debug!("getpeername: reply={:?}", data);
 
         self.rxq_dgram
             .lock()
@@ -398,6 +399,10 @@ impl Proxy for TcpProxy {
         debug!("vsock: tcp_proxy: sendmsg ret={}", ret);
     }
 
+    fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate {
+        ProxyUpdate::default()
+    }
+
     fn listen(&mut self, pkt: &VsockPacket, req: TsiListenReq) -> ProxyUpdate {
         debug!(
             "listen: id={} addr={}, port={}, vm_port={} backlog={}",
@@ -405,32 +410,30 @@ impl Proxy for TcpProxy {
         );
         let mut update = ProxyUpdate::default();
 
-        let result = match bind(
-            self.fd,
-            &SockAddr::Inet(InetAddr::new(IpAddr::V4(req.addr), req.port)),
-        ) {
-            Ok(_) => {
-                debug!("tcp bind: id={}", self.id);
-                0
-            }
-            Err(e) => {
-                warn!("tcp bind: id={} err={}", self.id, e);
-                -(e as i32)
-            }
-        };
-
-        if result != 0 {
-            return update;
-        }
-
-        let result = match listen(self.fd, req.backlog as usize) {
-            Ok(_) => {
-                debug!("tcp: proxy: id={}", self.id);
-                0
-            }
-            Err(e) => {
-                warn!("tcp: proxy: id={} err={}", self.id, e);
-                -(e as i32)
+        let result = if self.status == ProxyStatus::Listening {
+            0
+        } else {
+            match bind(
+                self.fd,
+                &SockAddr::Inet(InetAddr::new(IpAddr::V4(req.addr), req.port)),
+            ) {
+                Ok(_) => {
+                    debug!("tcp bind: id={}", self.id);
+                    match listen(self.fd, req.backlog as usize) {
+                        Ok(_) => {
+                            debug!("tcp: proxy: id={}", self.id);
+                            0
+                        }
+                        Err(e) => {
+                            warn!("tcp: proxy: id={} err={}", self.id, e);
+                            -(e as i32)
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("tcp bind: id={} err={}", self.id, e);
+                    -(e as i32)
+                }
             }
         };
 
@@ -589,6 +592,13 @@ impl Proxy for TcpProxy {
         };
 
         shutdown(self.fd, how);
+    }
+
+    fn release(&mut self) -> ProxyUpdate {
+        debug!("release");
+        let mut update = ProxyUpdate::default();
+        update.remove_proxy = true;
+        update
     }
 
     fn process_event(

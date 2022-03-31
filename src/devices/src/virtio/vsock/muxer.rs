@@ -340,7 +340,6 @@ impl VsockMuxer {
                             self.cid,
                             req.peer_port,
                             pkt.src_port(),
-                            self.epoll.clone(),
                             self.rxq_dgram.clone(),
                         )
                         .map(|proxy| {
@@ -389,11 +388,16 @@ impl VsockMuxer {
             if let Some(req) = pkt.read_sendto_addr() {
                 let id = (req.peer_port as u64) << 32 | defs::TSI_PROXY_PORT as u64;
                 debug!("vsock: new DGRAM sendto addr: id={}", id);
-                self.proxy_map
+                let update = self
+                    .proxy_map
                     .read()
                     .unwrap()
                     .get(&id)
                     .map(|proxy| proxy.lock().unwrap().sendto_addr(req));
+
+                update
+                    .and_then(|u| u.polling)
+                    .map(|p| self.update_polling(p.0, p.1, p.2));
             }
         } else if pkt.dst_port() == 1028 {
             let id = (pkt.src_port() as u64) << 32 | defs::TSI_PROXY_PORT as u64;
@@ -435,12 +439,43 @@ impl VsockMuxer {
                     .and_then(|u| u.polling)
                     .map(|p| self.update_polling(p.0, p.1, p.2));
             }
+        } else if pkt.dst_port() == 1031 {
+            debug!("vsock: DGRAM release request: src={}", pkt.src_port());
+            if let Some(req) = pkt.read_release_req() {
+                let id = (req.peer_port as u64) << 32 | req.local_port as u64;
+                debug!(
+                    "vsock: DGRAM release request: id={} local_port={} peer_port={}",
+                    id, req.local_port, req.peer_port
+                );
+                let update = if let Some(proxy) = self.proxy_map.read().unwrap().get(&id) {
+                    Some(proxy.lock().unwrap().release())
+                } else {
+                    error!("release without proxy: id={}", id);
+                    None
+                };
+
+                update
+                    .as_ref()
+                    .and_then(|u| u.polling)
+                    .map(|p| self.update_polling(p.0, p.1, p.2));
+
+                update.map(|u| {
+                    if u.remove_proxy {
+                        self.proxy_map.write().unwrap().remove(&id);
+                    }
+                });
+
+                error!(
+                    "number of proxies: {}",
+                    self.proxy_map.read().unwrap().len()
+                );
+            }
         } else {
             if pkt.op() == uapi::VSOCK_OP_RW {
                 debug!("vsock: DGRAM OP_RW");
-                if let Some(proxy_lock) =
-                    self.proxy_map.read().unwrap().get(&(pkt.src_port() as u64))
-                {
+                let id = (pkt.src_port() as u64) << 32 | defs::TSI_PROXY_PORT as u64;
+
+                if let Some(proxy_lock) = self.proxy_map.read().unwrap().get(&id) {
                     debug!("vsock: DGRAM allowing OP_RW for {}", pkt.src_port());
                     let mut proxy = proxy_lock.lock().unwrap();
                     proxy.sendmsg(pkt);

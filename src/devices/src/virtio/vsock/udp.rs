@@ -33,7 +33,6 @@ pub struct UdpProxy {
     pub status: ProxyStatus,
     sendto_addr: Option<SockAddr>,
     listening: bool,
-    epoll: Epoll,
     rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     rx_cnt: Wrapping<u32>,
     tx_cnt: Wrapping<u32>,
@@ -47,7 +46,6 @@ impl UdpProxy {
         cid: u64,
         peer_port: u32,
         control_port: u32,
-        epoll: Epoll,
         rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     ) -> Result<Self, ProxyError> {
         let fd = socket(
@@ -67,7 +65,6 @@ impl UdpProxy {
             status: ProxyStatus::Idle,
             sendto_addr: None,
             listening: false,
-            epoll,
             rxq_dgram,
             rx_cnt: Wrapping(0),
             tx_cnt: Wrapping(0),
@@ -170,16 +167,6 @@ impl UdpProxy {
         debug!("vsock: udp: recv_pkt: have_used={}", have_used);
         have_used
     }
-
-    fn register_events(&mut self, eset: EventSet) {
-        self.epoll
-            .ctl(
-                ControlOperation::Add,
-                self.fd,
-                &EpollEvent::new(eset, self.id),
-            )
-            .unwrap();
-    }
 }
 
 impl Proxy for UdpProxy {
@@ -269,11 +256,14 @@ impl Proxy for UdpProxy {
         debug!("vsock: udp_proxy: sendmsg ret={}", ret);
     }
 
-    fn sendto_addr(&mut self, req: TsiSendtoAddr) {
+    fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate {
         debug!(
             "vsock: udp_proxy: sendto_addr: addr={}, port={}",
             req.addr, req.port
         );
+
+        let mut update = ProxyUpdate::default();
+
         self.sendto_addr = Some(SockAddr::Inet(InetAddr::new(
             IpAddr::V4(req.addr),
             req.port,
@@ -285,11 +275,13 @@ impl Proxy for UdpProxy {
             ) {
                 Ok(_) => {
                     self.listening = true;
-                    self.register_events(EventSet::IN);
+                    update.polling = Some((self.id, self.fd, EventSet::IN));
                 }
                 Err(e) => debug!("vsock: udp_proxy: couldn't bind socket: {}", e),
             }
         }
+
+        update
     }
 
     fn sendto_data(&mut self, pkt: &VsockPacket) {
@@ -338,6 +330,13 @@ impl Proxy for UdpProxy {
 
     fn process_op_response(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
         ProxyUpdate::default()
+    }
+
+    fn release(&mut self) -> ProxyUpdate {
+        debug!("release");
+        let mut update = ProxyUpdate::default();
+        update.remove_proxy = true;
+        update
     }
 
     fn process_event(

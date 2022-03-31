@@ -172,6 +172,12 @@ pub struct TsiAcceptRsp {
     pub result: i32,
 }
 
+#[repr(C)]
+pub struct TsiReleaseReq {
+    pub peer_port: u32,
+    pub local_port: u32,
+}
+
 /// The vsock packet, implemented as a wrapper over a virtq descriptor chain:
 /// - the chain head, holding the packet header; and
 /// - (an optional) data/buffer descriptor, only present for data packets (VSOCK_OP_RW).
@@ -589,6 +595,19 @@ impl VsockPacket {
             if let Some(buf) = self.buf_mut() {
                 byte_order::write_le_u32(&mut buf[0..], rsp.result as u32);
             }
+        }
+    }
+
+    pub fn read_release_req(&self) -> Option<TsiReleaseReq> {
+        if self.buf_size >= 8 {
+            let peer_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[0..]);
+            let local_port: u32 = byte_order::read_le_u32(&self.buf().unwrap()[4..]);
+            Some(TsiReleaseReq {
+                peer_port,
+                local_port,
+            })
+        } else {
+            None
         }
     }
 }

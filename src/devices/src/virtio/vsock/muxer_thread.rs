@@ -125,6 +125,7 @@ impl MuxerThread {
 
     fn work(self) {
         let mut thread_rng = thread_rng();
+        error!("entry epoll fd={}", self.epoll.as_raw_fd());
         loop {
             let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
             match self
@@ -157,5 +158,7 @@ impl MuxerThread {
                 }
             }
         }
+
+        error!("exit epoll fd={}", self.epoll.as_raw_fd());
     }
 }

@@ -64,7 +64,7 @@ pub trait Proxy: Send + AsRawFd {
     fn confirm_connect(&mut self, pkt: &VsockPacket) {}
     fn getpeername(&mut self, pkt: &VsockPacket, req: TsiGetnameReq);
     fn sendmsg(&mut self, pkt: &VsockPacket);
-    fn sendto_addr(&mut self, req: TsiSendtoAddr) {}
+    fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate;
     fn sendto_data(&mut self, pkt: &VsockPacket) {}
     fn listen(&mut self, pkt: &VsockPacket, req: TsiListenReq) -> ProxyUpdate;
     fn accept(&mut self, pkt: &VsockPacket, req: TsiAcceptReq) -> ProxyUpdate;
@@ -80,6 +80,7 @@ pub trait Proxy: Send + AsRawFd {
     ) {
     }
     fn shutdown(&mut self, pkt: &VsockPacket) {}
+    fn release(&mut self) -> ProxyUpdate;
     fn process_event(
         &mut self,
         evset: EventSet,
