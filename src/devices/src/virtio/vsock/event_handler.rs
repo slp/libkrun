@@ -28,7 +28,6 @@ use polly::event_manager::{EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
 
 use super::device::{Vsock, DRQ_INDEX, DTQ_INDEX, EVQ_INDEX, RXQ_INDEX, TXQ_INDEX};
-use super::VsockBackend;
 use crate::virtio::VirtioDevice;
 
 impl Vsock {
@@ -129,25 +128,6 @@ impl Vsock {
         if let Err(e) = self.queue_events[EVQ_INDEX].read() {
             error!("Failed to consume vsock evq event: {:?}", e);
         }
-        false
-    }
-
-    fn notify_backend(&mut self, event: &EpollEvent) -> bool {
-        debug!("vsock: backend event");
-
-        /*
-        self.backend.notify(event.event_set());
-        // After the backend has been kicked, it might've freed up some resources, so we
-        // can attempt to send it more data to process.
-        // In particular, if `self.backend.send_pkt()` halted the TX queue processing (by
-        // reurning an error) at some point in the past, now is the time to try walking the
-        // TX queue again.
-        let mut raise_irq = self.process_tx();
-        if self.backend.has_pending_rx() {
-            raise_irq |= self.process_rx();
-        }
-        raise_irq
-         */
         false
     }
 

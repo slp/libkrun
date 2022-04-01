@@ -1,25 +1,23 @@
-use std::fmt;
 use std::num::Wrapping;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
 use nix::sys::socket::{
     bind, connect, getpeername, recv, send, sendto, socket, AddressFamily, InetAddr, IpAddr,
-    Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+    MsgFlags, SockAddr, SockFlag, SockType,
 };
 use nix::unistd::close;
 
 use super::super::Queue as VirtQueue;
 use super::defs;
 use super::defs::uapi;
-use super::muxer::MuxerRx;
+use super::muxer::{push_packet, MuxerRx};
 use super::muxer_rxq::MuxerRxQ;
 use super::packet::{
-    TsiAcceptReq, TsiConnectReq, TsiConnectRsp, TsiGetnameReq, TsiGetnameRsp, TsiListenReq,
-    TsiSendtoAddr, VsockPacket,
+    TsiAcceptReq, TsiConnectReq, TsiGetnameRsp, TsiListenReq, TsiSendtoAddr, VsockPacket,
 };
-use super::proxy::{Proxy, ProxyError, ProxyStatus, ProxyUpdate};
-use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use super::proxy::{Proxy, ProxyError, ProxyStatus, ProxyUpdate, RecvPkt};
+use utils::epoll::EventSet;
 
 use vm_memory::GuestMemoryMmap;
 
@@ -28,11 +26,12 @@ pub struct UdpProxy {
     cid: u64,
     local_port: u32,
     peer_port: u32,
-    control_port: u32,
     fd: RawFd,
     pub status: ProxyStatus,
     sendto_addr: Option<SockAddr>,
     listening: bool,
+    mem: GuestMemoryMmap,
+    queue_dgram: Arc<Mutex<VirtQueue>>,
     rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     rx_cnt: Wrapping<u32>,
     tx_cnt: Wrapping<u32>,
@@ -45,7 +44,8 @@ impl UdpProxy {
         id: u64,
         cid: u64,
         peer_port: u32,
-        control_port: u32,
+        mem: GuestMemoryMmap,
+        queue_dgram: Arc<Mutex<VirtQueue>>,
         rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     ) -> Result<Self, ProxyError> {
         let fd = socket(
@@ -60,11 +60,12 @@ impl UdpProxy {
             cid,
             local_port: 0,
             peer_port,
-            control_port,
             fd,
             status: ProxyStatus::Idle,
             sendto_addr: None,
             listening: false,
+            mem,
+            queue_dgram,
             rxq_dgram,
             rx_cnt: Wrapping(0),
             tx_cnt: Wrapping(0),
@@ -92,7 +93,17 @@ impl UdpProxy {
         (Wrapping(self.peer_buf_alloc as u32) - (self.rx_cnt - self.peer_fwd_cnt)).0 as usize
     }
 
-    fn recv_to_pkt(&mut self, pkt: &mut VsockPacket) -> Option<usize> {
+    fn send_credit_request(&self) {
+        // This response goes to the connection.
+        let rx = MuxerRx::CreditRequest {
+            local_port: self.local_port,
+            peer_port: self.peer_port,
+            fwd_cnt: self.tx_cnt.0,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
+    }
+
+    fn recv_to_pkt(&self, pkt: &mut VsockPacket) -> RecvPkt {
         if let Some(buf) = pkt.buf_mut() {
             let peer_credit = self.peer_avail_credit();
             let max_len = std::cmp::min(buf.len(), peer_credit);
@@ -105,63 +116,66 @@ impl UdpProxy {
             );
 
             if max_len == 0 {
-                if self.status != ProxyStatus::WaitingCreditUpdate {
-                    self.status = ProxyStatus::WaitingCreditUpdate;
-                    self.rxq_dgram.lock().unwrap().push(MuxerRx::CreditRequest {
-                        local_port: pkt.src_port(),
-                        peer_port: pkt.dst_port(),
-                        fwd_cnt: self.tx_cnt.0,
-                    });
-                }
-                return None;
+                return RecvPkt::WaitForCredit;
             }
 
             match recv(self.fd, &mut buf[..max_len], MsgFlags::empty()) {
                 Ok(cnt) => {
                     debug!("vsock: udp: recv cnt={}", cnt);
                     if cnt > 0 {
-                        self.rx_cnt += Wrapping(cnt as u32);
-                        self.init_pkt(pkt);
-                        pkt.set_len(cnt as u32);
-                        Some(pkt.hdr().len() + cnt)
+                        RecvPkt::Read(cnt)
                     } else {
-                        self.status = ProxyStatus::Closed;
-                        None
+                        RecvPkt::Close
                     }
                 }
                 Err(e) => {
                     debug!("vsock: udp: recv_pkt: recv error: {:?}", e);
-                    None
+                    RecvPkt::Error
                 }
             }
         } else {
             debug!("vsock: udp: recv_pkt: pkt without buf");
-            None
+            RecvPkt::Error
         }
     }
 
-    fn recv_pkt(&mut self, queue_rx: &mut VirtQueue, mem: &GuestMemoryMmap) -> bool {
+    fn recv_pkt(&mut self) -> bool {
         let mut have_used = false;
+        let mut queue = self.queue_dgram.lock().unwrap();
 
-        while let Some(head) = queue_rx.pop(mem) {
+        while let Some(head) = queue.pop(&self.mem) {
             let len = match VsockPacket::from_rx_virtq_head(&head) {
                 Ok(mut pkt) => match self.recv_to_pkt(&mut pkt) {
-                    Some(len) => len,
-                    None => {
-                        queue_rx.undo_pop();
-                        break;
+                    RecvPkt::WaitForCredit => {
+                        self.status = ProxyStatus::WaitingCreditUpdate;
+                        0
                     }
+                    RecvPkt::Read(cnt) => {
+                        self.rx_cnt += Wrapping(cnt as u32);
+                        self.init_pkt(&mut pkt);
+                        pkt.set_len(cnt as u32);
+                        pkt.hdr().len() + cnt
+                    }
+                    RecvPkt::Close => {
+                        self.status = ProxyStatus::Closed;
+                        0
+                    }
+                    RecvPkt::Error => 0,
                 },
                 Err(e) => {
-                    debug!("vsock: udp: recv_pkt: RX queue error: {:?}", e);
-                    queue_rx.undo_pop();
-                    break;
+                    debug!("vsock: tcp: recv_pkt: RX queue error: {:?}", e);
+                    0
                 }
             };
 
-            have_used = true;
-            debug!("vsock: udp: recv_pkt: pushing packet with {} bytes", len);
-            queue_rx.add_used(mem, head.index, len as u32);
+            if len == 0 {
+                queue.undo_pop();
+                break;
+            } else {
+                have_used = true;
+                debug!("vsock: udp: recv_pkt: pushing packet with {} bytes", len);
+                queue.add_used(&self.mem, head.index, len as u32);
+            }
         }
 
         debug!("vsock: udp: recv_pkt: have_used={}", have_used);
@@ -198,11 +212,13 @@ impl Proxy for UdpProxy {
         self.peer_buf_alloc = pkt.buf_alloc();
         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
 
-        self.rxq_dgram.lock().unwrap().push(MuxerRx::ConnResponse {
+        // This response goes to the connection.
+        let rx = MuxerRx::ConnResponse {
             local_port: pkt.dst_port(),
             peer_port: pkt.src_port(),
             result: res,
-        });
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
 
         let mut update = ProxyUpdate::default();
         if res == 0 && !self.listening {
@@ -211,7 +227,7 @@ impl Proxy for UdpProxy {
         update
     }
 
-    fn getpeername(&mut self, pkt: &VsockPacket, req: TsiGetnameReq) {
+    fn getpeername(&mut self, pkt: &VsockPacket) {
         debug!("vsock: udp: process_getpeername");
 
         let name = getpeername(self.fd).unwrap();
@@ -228,24 +244,23 @@ impl Proxy for UdpProxy {
             result: 0,
         };
 
-        self.rxq_dgram
-            .lock()
-            .unwrap()
-            .push(MuxerRx::GetnameResponse {
-                local_port: pkt.dst_port(),
-                peer_port: pkt.src_port(),
-                data,
-            });
+        // This response goes to the connection.
+        let rx = MuxerRx::GetnameResponse {
+            local_port: pkt.dst_port(),
+            peer_port: pkt.src_port(),
+            data,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
     }
 
-    fn sendmsg(&mut self, pkt: &VsockPacket) {
+    fn sendmsg(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
         debug!("vsock: udp_proxy: sendmsg");
 
         let ret = if let Some(buf) = pkt.buf() {
             match send(self.fd, buf, MsgFlags::empty()) {
                 Ok(sent) => {
                     self.tx_cnt += Wrapping(sent as u32);
-                    (sent as i32)
+                    sent as i32
                 }
                 Err(err) => -(err as i32),
             }
@@ -254,6 +269,8 @@ impl Proxy for UdpProxy {
         };
 
         debug!("vsock: udp_proxy: sendmsg ret={}", ret);
+
+        ProxyUpdate::default()
     }
 
     fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate {
@@ -293,7 +310,9 @@ impl Proxy for UdpProxy {
         if let Some(addr) = self.sendto_addr {
             if let Some(buf) = pkt.buf() {
                 match sendto(self.fd, buf, &addr, MsgFlags::empty()) {
-                    Ok(sent) => {}
+                    Ok(sent) => {
+                        self.tx_cnt += Wrapping(sent as u32);
+                    }
                     Err(err) => debug!("error in sendto: {}", err),
                 }
             } else {
@@ -304,11 +323,11 @@ impl Proxy for UdpProxy {
         }
     }
 
-    fn listen(&mut self, pkt: &VsockPacket, req: TsiListenReq) -> ProxyUpdate {
+    fn listen(&mut self, _pkt: &VsockPacket, _req: TsiListenReq) -> ProxyUpdate {
         ProxyUpdate::default()
     }
 
-    fn accept(&mut self, pkt: &VsockPacket, req: TsiAcceptReq) -> ProxyUpdate {
+    fn accept(&mut self, _pkt: &VsockPacket, _req: TsiAcceptReq) -> ProxyUpdate {
         ProxyUpdate::default()
     }
 
@@ -323,29 +342,25 @@ impl Proxy for UdpProxy {
         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
         //self.status = ProxyStatus::Connected;
 
-        let mut update = ProxyUpdate::default();
-        update.polling = Some((self.id, self.fd, EventSet::IN));
-        update
+        ProxyUpdate {
+            polling: Some((self.id, self.fd, EventSet::IN)),
+            ..Default::default()
+        }
     }
 
-    fn process_op_response(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
+    fn process_op_response(&mut self, _pkt: &VsockPacket) -> ProxyUpdate {
         ProxyUpdate::default()
     }
 
     fn release(&mut self) -> ProxyUpdate {
         debug!("release");
-        let mut update = ProxyUpdate::default();
-        update.remove_proxy = true;
-        update
+        ProxyUpdate {
+            remove_proxy: true,
+            ..Default::default()
+        }
     }
 
-    fn process_event(
-        &mut self,
-        evset: EventSet,
-        queue_rx: &mut VirtQueue,
-        queue_dr: &mut VirtQueue,
-        mem: &GuestMemoryMmap,
-    ) -> ProxyUpdate {
+    fn process_event(&mut self, evset: EventSet) -> ProxyUpdate {
         let mut update = ProxyUpdate::default();
 
         if evset.contains(EventSet::HANG_UP) {
@@ -354,7 +369,12 @@ impl Proxy for UdpProxy {
         }
 
         if evset.contains(EventSet::IN) {
-            update.signal_queue = self.recv_pkt(queue_rx, mem);
+            update.signal_queue = self.recv_pkt();
+
+            if self.status == ProxyStatus::WaitingCreditUpdate {
+                self.send_credit_request();
+                update.polling = Some((self.id(), self.fd, EventSet::empty()));
+            }
         }
 
         if evset.contains(EventSet::OUT) {
@@ -373,6 +393,8 @@ impl AsRawFd for UdpProxy {
 
 impl Drop for UdpProxy {
     fn drop(&mut self) {
-        close(self.fd);
+        if let Err(e) = close(self.fd) {
+            warn!("error closing proxy fd: {}", e);
+        }
     }
 }

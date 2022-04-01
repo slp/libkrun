@@ -39,23 +39,25 @@ mod defs {
     /// Max vsock packet data/buffer size.
     pub const MAX_PKT_BUF_SIZE: usize = 64 * 1024;
 
-    /// Maximum number of established connections that we can handle.
-    pub const MAX_CONNECTIONS: usize = 1023;
-
     /// Size of the muxer RX packet queue.
     pub const MUXER_RXQ_SIZE: usize = 256;
 
-    /// Size of the muxer connection kill queue.
-    pub const MUXER_KILLQ_SIZE: usize = 128;
-
     // Kernel side doesn't play nice with us supporting so many bytes
     //pub const CONN_TX_BUF_SIZE: usize = i32::MAX as usize;
-    pub const CONN_TX_BUF_SIZE: usize = 256 * 1024 * 1024;
+    pub const CONN_TX_BUF_SIZE: usize = 8 * 1024 * 1024;
     pub const SOCK_STREAM: u16 = 1;
     pub const SOCK_DGRAM: u16 = 2;
 
     /// Misc
     pub const TSI_PROXY_PORT: u32 = 620;
+    pub const TSI_PROXY_CREATE: u32 = 1024;
+    pub const TSI_CONNECT: u32 = 1025;
+    pub const TSI_GETNAME: u32 = 1026;
+    pub const TSI_SENDTO_ADDR: u32 = 1027;
+    pub const TSI_SENDTO_DATA: u32 = 1028;
+    pub const TSI_LISTEN: u32 = 1029;
+    pub const TSI_ACCEPT: u32 = 1030;
+    pub const TSI_PROXY_RELEASE: u32 = 1031;
 
     pub mod uapi {
 
@@ -91,14 +93,6 @@ mod defs {
         pub const VSOCK_OP_CREDIT_UPDATE: u16 = 6;
         /// Flow control credit update request.
         pub const VSOCK_OP_CREDIT_REQUEST: u16 = 7;
-        /// Connection request with extended parameters.
-        pub const VSOCK_OP_REQUEST_EX: u16 = 8;
-        /// Listen request for wrapped socket with extended parameters.
-        pub const VSOCK_OP_WRAP_LISTEN: u16 = 9;
-        /// Close request for wrapped socket.
-        pub const VSOCK_OP_WRAP_CLOSE: u16 = 10;
-        /// Connection response.
-        pub const VSOCK_OP_RESPONSE_EX: u16 = 11;
 
         /// Vsock packet flags.
         /// Defined in `/include/uapi/linux/virtio_vsock.h`.
@@ -113,14 +107,10 @@ mod defs {
         ///
         /// Stream / connection-oriented packet (the only currently valid type).
         pub const VSOCK_TYPE_STREAM: u16 = 1;
-        pub const VSOCK_TYPE_SEQPACKET: u16 = 2;
+        //pub const VSOCK_TYPE_SEQPACKET: u16 = 2;
         pub const VSOCK_TYPE_DGRAM: u16 = 3;
 
         pub const VSOCK_HOST_CID: u64 = 2;
-
-        /// UNIX sa_family
-        pub const AF_UNIX: u16 = 1;
-        pub const AF_INET: u16 = 2;
     }
 }
 

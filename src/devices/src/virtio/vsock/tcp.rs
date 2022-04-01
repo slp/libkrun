@@ -1,25 +1,23 @@
-use std::fmt;
 use std::num::Wrapping;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
-use nix::fcntl;
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::sys::socket::{
-    accept, bind, connect, getpeername, listen, recv, send, shutdown, socket, AddressFamily,
-    InetAddr, IpAddr, Ipv4Addr, MsgFlags, Shutdown, SockAddr, SockFlag, SockType,
+    accept, bind, connect, getpeername, listen, recv, send, setsockopt, shutdown, socket, sockopt,
+    AddressFamily, InetAddr, IpAddr, Ipv4Addr, MsgFlags, Shutdown, SockAddr, SockFlag, SockType,
 };
 use nix::unistd::close;
 
 use super::super::Queue as VirtQueue;
 use super::defs;
 use super::defs::uapi;
-use super::muxer::MuxerRx;
+use super::muxer::{push_packet, MuxerRx};
 use super::muxer_rxq::MuxerRxQ;
 use super::packet::{
-    TsiAcceptReq, TsiAcceptRsp, TsiConnectReq, TsiConnectRsp, TsiGetnameReq, TsiGetnameRsp,
-    TsiListenReq, TsiSendtoAddr, VsockPacket,
+    TsiAcceptReq, TsiConnectReq, TsiGetnameRsp, TsiListenReq, TsiSendtoAddr, VsockPacket,
 };
-use super::proxy::{Proxy, ProxyError, ProxyStatus, ProxyUpdate};
+use super::proxy::{Proxy, ProxyError, ProxyStatus, ProxyUpdate, RecvPkt};
 use utils::epoll::EventSet;
 
 use vm_memory::GuestMemoryMmap;
@@ -33,22 +31,30 @@ pub struct TcpProxy {
     control_port: u32,
     fd: RawFd,
     pub status: ProxyStatus,
+    mem: GuestMemoryMmap,
+    queue_stream: Arc<Mutex<VirtQueue>>,
+    queue_dgram: Arc<Mutex<VirtQueue>>,
     rxq_stream: Arc<Mutex<MuxerRxQ>>,
     rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     rx_cnt: Wrapping<u32>,
     tx_cnt: Wrapping<u32>,
+    last_tx_cnt_sent: Wrapping<u32>,
     peer_buf_alloc: u32,
     peer_fwd_cnt: Wrapping<u32>,
     push_cnt: Wrapping<u32>,
 }
 
 impl TcpProxy {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         cid: u64,
         local_port: u32,
         peer_port: u32,
         control_port: u32,
+        mem: GuestMemoryMmap,
+        queue_stream: Arc<Mutex<VirtQueue>>,
+        queue_dgram: Arc<Mutex<VirtQueue>>,
         rxq_stream: Arc<Mutex<MuxerRxQ>>,
         rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     ) -> Result<Self, ProxyError> {
@@ -59,6 +65,9 @@ impl TcpProxy {
             None,
         )
         .map_err(ProxyError::CreatingSocket)?;
+
+        setsockopt(fd, sockopt::ReusePort, &true).map_err(ProxyError::SettingReusePort)?;
+
         Ok(TcpProxy {
             id,
             cid,
@@ -68,16 +77,21 @@ impl TcpProxy {
             control_port,
             fd,
             status: ProxyStatus::Idle,
+            mem,
+            queue_stream,
+            queue_dgram,
             rxq_stream,
             rxq_dgram,
             rx_cnt: Wrapping(0),
             tx_cnt: Wrapping(0),
+            last_tx_cnt_sent: Wrapping(0),
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
             push_cnt: Wrapping(0),
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_reverse(
         id: u64,
         cid: u64,
@@ -85,6 +99,9 @@ impl TcpProxy {
         local_port: u32,
         peer_port: u32,
         fd: RawFd,
+        mem: GuestMemoryMmap,
+        queue_stream: Arc<Mutex<VirtQueue>>,
+        queue_dgram: Arc<Mutex<VirtQueue>>,
         rxq_stream: Arc<Mutex<MuxerRxQ>>,
         rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     ) -> Self {
@@ -101,28 +118,18 @@ impl TcpProxy {
             control_port: 0,
             fd,
             status: ProxyStatus::ReverseInit,
+            mem,
+            queue_stream,
+            queue_dgram,
             rxq_stream,
             rxq_dgram,
             rx_cnt: Wrapping(0),
             tx_cnt: Wrapping(0),
+            last_tx_cnt_sent: Wrapping(0),
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
             push_cnt: Wrapping(0),
         }
-    }
-
-    fn init_control_pkt(&self, pkt: &mut VsockPacket) {
-        debug!(
-            "tcp: init_control_pkt: id={}, control_port={}",
-            self.id, self.control_port
-        );
-        pkt.set_op(uapi::VSOCK_OP_RW)
-            .set_src_cid(uapi::VSOCK_HOST_CID)
-            .set_dst_cid(self.cid)
-            .set_dst_port(self.control_port)
-            .set_type(uapi::VSOCK_TYPE_DGRAM)
-            .set_buf_alloc(defs::CONN_TX_BUF_SIZE as u32)
-            .set_fwd_cnt(self.tx_cnt.0);
     }
 
     fn init_data_pkt(&self, pkt: &mut VsockPacket) {
@@ -145,7 +152,7 @@ impl TcpProxy {
         (Wrapping(self.peer_buf_alloc as u32) - (self.rx_cnt - self.peer_fwd_cnt)).0 as usize
     }
 
-    fn recv_to_pkt(&mut self, pkt: &mut VsockPacket) -> Option<usize> {
+    fn recv_to_pkt(&self, pkt: &mut VsockPacket) -> RecvPkt {
         if let Some(buf) = pkt.buf_mut() {
             let peer_credit = self.peer_avail_credit();
             let max_len = std::cmp::min(buf.len(), peer_credit);
@@ -158,125 +165,126 @@ impl TcpProxy {
             );
 
             if max_len == 0 {
-                if self.status != ProxyStatus::WaitingCreditUpdate {
-                    warn!("recv_to_pkt: requesting credit update");
-                    self.status = ProxyStatus::WaitingCreditUpdate;
-                    self.rxq_stream
-                        .lock()
-                        .unwrap()
-                        .push(MuxerRx::CreditRequest {
-                            local_port: self.local_port,
-                            peer_port: self.peer_port,
-                            fwd_cnt: self.tx_cnt.0,
-                        });
-                }
-                return None;
+                return RecvPkt::WaitForCredit;
             }
 
-            match recv(self.fd, &mut buf[..max_len], MsgFlags::empty()) {
+            match recv(self.fd, &mut buf[..max_len], MsgFlags::MSG_DONTWAIT) {
                 Ok(cnt) => {
                     debug!("vsock: tcp: recv cnt={}", cnt);
                     if cnt > 0 {
-                        self.rx_cnt += Wrapping(cnt as u32);
                         debug!("vsock: tcp: recv rx_cnt={}", self.rx_cnt);
-                        self.init_data_pkt(pkt);
-                        pkt.set_len(cnt as u32);
-                        Some(pkt.hdr().len() + cnt)
+                        RecvPkt::Read(cnt)
                     } else {
-                        self.status = ProxyStatus::Closed;
-                        None
+                        RecvPkt::Close
                     }
                 }
                 Err(e) => {
                     debug!("vsock: tcp: recv_pkt: recv error: {:?}", e);
-                    None
+                    RecvPkt::Error
                 }
             }
         } else {
             debug!("vsock: tcp: recv_pkt: pkt without buf");
-            None
+            RecvPkt::Error
         }
     }
 
-    fn recv_pkt(&mut self, queue_rx: &mut VirtQueue, mem: &GuestMemoryMmap) -> bool {
+    fn recv_pkt(&mut self) -> (bool, bool) {
         let mut have_used = false;
+        let mut wait_credit = false;
+        let mut queue = self.queue_stream.lock().unwrap();
 
-        while let Some(head) = queue_rx.pop(mem) {
+        while let Some(head) = queue.pop(&self.mem) {
             let len = match VsockPacket::from_rx_virtq_head(&head) {
                 Ok(mut pkt) => match self.recv_to_pkt(&mut pkt) {
-                    Some(len) => len,
-                    None => {
-                        queue_rx.undo_pop();
-                        break;
+                    RecvPkt::WaitForCredit => {
+                        wait_credit = true;
+                        0
                     }
+                    RecvPkt::Read(cnt) => {
+                        self.rx_cnt += Wrapping(cnt as u32);
+                        self.init_data_pkt(&mut pkt);
+                        pkt.set_len(cnt as u32);
+                        pkt.hdr().len() + cnt
+                    }
+                    RecvPkt::Close => {
+                        self.status = ProxyStatus::Closed;
+                        0
+                    }
+                    RecvPkt::Error => 0,
                 },
                 Err(e) => {
                     debug!("vsock: tcp: recv_pkt: RX queue error: {:?}", e);
-                    queue_rx.undo_pop();
-                    break;
+                    0
                 }
             };
 
-            have_used = true;
-            self.push_cnt += Wrapping(len as u32);
-            debug!(
-                "vsock: tcp: recv_pkt: pushing packet with {} bytes, push_cnt={}",
-                len, self.push_cnt
-            );
-            queue_rx.add_used(mem, head.index, len as u32);
+            if len == 0 {
+                queue.undo_pop();
+                break;
+            } else {
+                have_used = true;
+                self.push_cnt += Wrapping(len as u32);
+                debug!(
+                    "vsock: tcp: recv_pkt: pushing packet with {} bytes, push_cnt={}",
+                    len, self.push_cnt
+                );
+                queue.add_used(&self.mem, head.index, len as u32);
+            }
         }
 
         debug!("vsock: tcp: recv_pkt: have_used={}", have_used);
-        have_used
+        (have_used, wait_credit)
     }
 
-    fn push_connect_rsp(&mut self, result: i32, queue_rx: &mut VirtQueue, mem: &GuestMemoryMmap) {
-        if let Some(head) = queue_rx.pop(mem) {
-            match VsockPacket::from_rx_virtq_head(&head) {
-                Ok(mut pkt) => {
-                    self.init_control_pkt(&mut pkt);
-                    pkt.set_src_port(1025);
-                    debug!(
-                        "tcp: ConnResponse: control_port: {}, result: {}",
-                        self.control_port, result
-                    );
-                    pkt.write_connect_rsp(TsiConnectRsp { result });
-                    pkt.set_len(pkt.buf().unwrap().len() as u32);
-                    queue_rx.add_used(mem, head.index, pkt.hdr().len() as u32 + pkt.len());
-                }
-                Err(_) => {}
-            }
-        } else {
-            warn!("couldn't push connect rsp, adding it to rxq queue");
-            self.rxq_stream.lock().unwrap().push(MuxerRx::ConnResponse {
-                local_port: 1025,
-                peer_port: self.control_port,
-                result,
-            });
-        }
+    fn push_connect_rsp(&self, result: i32) {
+        debug!(
+            "push_connect_rsp: id: {}, control_port: {}, result: {}",
+            self.id, self.control_port, result
+        );
+
+        // This response goes to the control port (DGRAM).
+        let rx = MuxerRx::ConnResponse {
+            local_port: 1025,
+            peer_port: self.control_port,
+            result,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
     }
 
-    fn push_reset(&mut self, queue_rx: &mut VirtQueue, mem: &GuestMemoryMmap) {
-        if let Some(head) = queue_rx.pop(mem) {
-            match VsockPacket::from_rx_virtq_head(&head) {
-                Ok(mut pkt) => {
-                    self.init_data_pkt(&mut pkt);
-                    pkt.set_op(uapi::VSOCK_OP_RST).set_len(0);
-                    debug!(
-                        "tcp: reset: id: {}, peer_port: {}, local_port: {}",
-                        self.id, self.peer_port, self.local_port
-                    );
-                    queue_rx.add_used(mem, head.index, pkt.hdr().len() as u32);
+    fn push_reset(&self) {
+        debug!(
+            "push_reset: id: {}, peer_port: {}, local_port: {}",
+            self.id, self.peer_port, self.local_port
+        );
+
+        // This response goes to the connection.
+        let rx = MuxerRx::Reset {
+            local_port: self.local_port,
+            peer_port: self.peer_port,
+        };
+        push_packet(
+            self.cid,
+            rx,
+            &self.rxq_stream,
+            &self.queue_stream,
+            &self.mem,
+        );
+    }
+
+    fn switch_to_connected(&mut self) {
+        self.status = ProxyStatus::Connected;
+        match fcntl(self.fd, FcntlArg::F_GETFL) {
+            Ok(flags) => match OFlag::from_bits(flags) {
+                Some(flags) => {
+                    if let Err(e) = fcntl(self.fd, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK)) {
+                        warn!("error setting nonblock: id={}, err={}", self.id, e);
+                    }
                 }
-                Err(_) => {}
-            }
-        } else {
-            warn!("couldn't push reset, adding it to rxq queue");
-            self.rxq_stream.lock().unwrap().push(MuxerRx::Reset {
-                local_port: self.local_port,
-                peer_port: self.id as u32,
-            });
-        }
+                None => error!("invalid fd flags id={}", self.id),
+            },
+            Err(e) => error!("couldn't obtain fd flags id={}, err={}", self.id, e),
+        };
     }
 }
 
@@ -289,16 +297,16 @@ impl Proxy for TcpProxy {
         self.status
     }
 
-    fn connect(&mut self, pkt: &VsockPacket, req: TsiConnectReq) -> ProxyUpdate {
+    fn connect(&mut self, _pkt: &VsockPacket, req: TsiConnectReq) -> ProxyUpdate {
         let mut update = ProxyUpdate::default();
 
-        let res = match connect(
+        let result = match connect(
             self.fd,
             &SockAddr::Inet(InetAddr::new(IpAddr::V4(req.addr), req.port)),
         ) {
             Ok(()) => {
                 debug!("vsock: connect: Connected");
-                self.status = ProxyStatus::Connected;
+                self.switch_to_connected();
                 0
             }
             Err(nix::errno::Errno::EINPROGRESS) => {
@@ -315,11 +323,7 @@ impl Proxy for TcpProxy {
         if self.status == ProxyStatus::Connecting {
             update.polling = Some((self.id, self.fd, EventSet::IN | EventSet::OUT));
         } else {
-            self.rxq_stream.lock().unwrap().push(MuxerRx::ConnResponse {
-                local_port: 1025,
-                peer_port: pkt.src_port(),
-                result: res,
-            });
+            self.push_connect_rsp(result);
         }
 
         update
@@ -339,13 +343,22 @@ impl Proxy for TcpProxy {
 
         self.local_port = pkt.dst_port();
         self.peer_port = pkt.src_port();
-        self.rxq_stream.lock().unwrap().push(MuxerRx::OpResponse {
+
+        // This response goes to the connection.
+        let rx = MuxerRx::OpResponse {
             local_port: pkt.dst_port(),
             peer_port: pkt.src_port(),
-        });
+        };
+        push_packet(
+            self.cid,
+            rx,
+            &self.rxq_stream,
+            &self.queue_stream,
+            &self.mem,
+        );
     }
 
-    fn getpeername(&mut self, pkt: &VsockPacket, req: TsiGetnameReq) {
+    fn getpeername(&mut self, pkt: &VsockPacket) {
         debug!("getpeername: id={}", self.id);
 
         let (result, addr, port) = match getpeername(self.fd) {
@@ -363,24 +376,28 @@ impl Proxy for TcpProxy {
 
         debug!("getpeername: reply={:?}", data);
 
-        self.rxq_dgram
-            .lock()
-            .unwrap()
-            .push(MuxerRx::GetnameResponse {
-                local_port: pkt.dst_port(),
-                peer_port: pkt.src_port(),
-                data,
-            });
+        // This response goes to the control port (DGRAM).
+        let rx = MuxerRx::GetnameResponse {
+            local_port: pkt.dst_port(),
+            peer_port: pkt.src_port(),
+            data,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
     }
 
-    fn sendmsg(&mut self, pkt: &VsockPacket) {
+    fn sendmsg(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
         debug!("vsock: tcp_proxy: sendmsg");
+
+        let mut update = ProxyUpdate::default();
 
         let ret = if let Some(buf) = pkt.buf() {
             match send(self.fd, buf, MsgFlags::empty()) {
                 Ok(sent) => {
+                    if sent != buf.len() {
+                        error!("couldn't set everything: buf={}, sent={}", buf.len(), sent);
+                    }
                     self.tx_cnt += Wrapping(sent as u32);
-                    (sent as i32)
+                    sent as i32
                 }
                 Err(err) => -(err as i32),
             }
@@ -388,18 +405,35 @@ impl Proxy for TcpProxy {
             -libc::EINVAL
         };
 
-        if ret > 0 && self.tx_cnt.0 > (defs::CONN_TX_BUF_SIZE / 2) as u32 {
-            self.rxq_stream.lock().unwrap().push(MuxerRx::CreditUpdate {
+        if ret > 0
+            && (self.tx_cnt - self.last_tx_cnt_sent).0 as usize >= (defs::CONN_TX_BUF_SIZE / 2)
+        {
+            debug!(
+                "sending credit update: id={}, tx_cnt={}, last_tx_cnt={}",
+                self.id, self.tx_cnt, self.last_tx_cnt_sent
+            );
+            self.last_tx_cnt_sent = self.tx_cnt;
+            // This packet goes to the connection.
+            let rx = MuxerRx::CreditUpdate {
                 local_port: pkt.dst_port(),
                 peer_port: pkt.src_port(),
                 fwd_cnt: self.tx_cnt.0,
-            });
+            };
+            push_packet(
+                self.cid,
+                rx,
+                &self.rxq_stream,
+                &self.queue_stream,
+                &self.mem,
+            );
+            update.signal_queue = true;
         }
 
         debug!("vsock: tcp_proxy: sendmsg ret={}", ret);
+        update
     }
 
-    fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate {
+    fn sendto_addr(&mut self, _req: TsiSendtoAddr) -> ProxyUpdate {
         ProxyUpdate::default()
     }
 
@@ -437,14 +471,13 @@ impl Proxy for TcpProxy {
             }
         };
 
-        self.rxq_dgram
-            .lock()
-            .unwrap()
-            .push(MuxerRx::ListenResponse {
-                local_port: pkt.dst_port(),
-                peer_port: pkt.src_port(),
-                result,
-            });
+        // This packet goes to the control port (DGRAM).
+        let rx = MuxerRx::ListenResponse {
+            local_port: pkt.dst_port(),
+            peer_port: pkt.src_port(),
+            result,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
 
         if result == 0 {
             self.peer_port = req.vm_port;
@@ -468,15 +501,13 @@ impl Proxy for TcpProxy {
         };
 
         if result != -libc::EAGAIN {
-            self.rxq_dgram
-                .lock()
-                .unwrap()
-                .push(MuxerRx::AcceptResponse {
-                    local_port: pkt.dst_port(),
-                    peer_port: pkt.src_port(),
-                    new_id: 0,
-                    result,
-                });
+            // This packet goes to the control port (DGRAM).
+            let rx = MuxerRx::AcceptResponse {
+                local_port: pkt.dst_port(),
+                peer_port: pkt.src_port(),
+                result,
+            };
+            push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
         }
 
         update
@@ -484,45 +515,34 @@ impl Proxy for TcpProxy {
 
     fn update_peer_credit(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
         debug!(
-            "vsock: tcp_proxy: update_credit: buf_alloc={} rx_cnt={} fwd_cnt={}",
+            "update_credit: buf_alloc={} rx_cnt={} fwd_cnt={}",
             pkt.buf_alloc(),
             self.rx_cnt,
             pkt.fwd_cnt()
         );
         self.peer_buf_alloc = pkt.buf_alloc();
         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
+
         self.status = ProxyStatus::Connected;
 
-        let mut update = ProxyUpdate::default();
-        update.polling = Some((self.id, self.fd, EventSet::IN));
-        update
+        ProxyUpdate {
+            polling: Some((self.id, self.fd, EventSet::IN)),
+            ..Default::default()
+        }
     }
 
-    fn push_op_request(&mut self, queue: &mut VirtQueue, mem: &GuestMemoryMmap) {
-        if let Some(head) = queue.pop(mem) {
-            match VsockPacket::from_rx_virtq_head(&head) {
-                Ok(mut pkt) => {
-                    self.init_data_pkt(&mut pkt);
-                    pkt.set_op(uapi::VSOCK_OP_REQUEST)
-                        .set_src_port(self.local_port)
-                        .set_dst_port(self.peer_port)
-                        .set_dst_cid(self.cid)
-                        .set_src_cid(uapi::VSOCK_HOST_CID);
-                    debug!(
-                        "tcp: OP REQUEST: id={}, local_port={} peer_port={}",
-                        self.id, self.local_port, self.peer_port
-                    );
-                    queue.add_used(mem, head.index, pkt.hdr().len() as u32);
-                }
-                Err(_) => {}
-            }
-        } else {
-            warn!("couldn't push op request, adding it to rxq queue");
-            self.rxq_stream.lock().unwrap().push(MuxerRx::OpRequest {
-                local_port: 696969u32,
-                peer_port: self.id as u32,
-            });
-        }
+    fn push_op_request(&self) {
+        debug!(
+            "push_op_request: id={}, local_port={} peer_port={}",
+            self.id, self.local_port, self.peer_port
+        );
+
+        // This packet goes to the connection.
+        let rx = MuxerRx::OpRequest {
+            local_port: self.local_port,
+            peer_port: self.peer_port,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
     }
 
     fn process_op_response(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
@@ -536,47 +556,28 @@ impl Proxy for TcpProxy {
         self.peer_buf_alloc = pkt.buf_alloc();
         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
 
-        self.status = ProxyStatus::Connected;
-        let mut update = ProxyUpdate::default();
-        update.polling = Some((self.id, self.fd, EventSet::IN));
-        update.push_accept = Some((self.id, self.parent_id));
-        update
+        self.switch_to_connected();
+
+        ProxyUpdate {
+            polling: Some((self.id, self.fd, EventSet::IN)),
+            push_accept: Some((self.id, self.parent_id)),
+            ..Default::default()
+        }
     }
 
-    fn push_accept_rsp(
-        &mut self,
-        new_id: u64,
-        result: i32,
-        queue: &mut VirtQueue,
-        mem: &GuestMemoryMmap,
-    ) {
-        if let Some(head) = queue.pop(mem) {
-            match VsockPacket::from_rx_virtq_head(&head) {
-                Ok(mut pkt) => {
-                    self.init_control_pkt(&mut pkt);
-                    pkt.set_src_port(1030);
-                    debug!(
-                        "tcp: AcceptResponse: control_port: {}, new_id: {}, result: {}",
-                        self.control_port, new_id, result
-                    );
-                    pkt.write_accept_rsp(TsiAcceptRsp { result });
-                    pkt.set_len(pkt.buf().unwrap().len() as u32);
-                    queue.add_used(mem, head.index, pkt.hdr().len() as u32 + pkt.len());
-                }
-                Err(_) => {}
-            }
-        } else {
-            warn!("couldn't push accept rsp, adding it to rxq queue");
-            self.rxq_stream
-                .lock()
-                .unwrap()
-                .push(MuxerRx::AcceptResponse {
-                    local_port: 1030,
-                    peer_port: self.control_port,
-                    new_id,
-                    result,
-                });
-        }
+    fn push_accept_rsp(&self, result: i32) {
+        debug!(
+            "push_accept_rsp: control_port: {}, result: {}",
+            self.control_port, result
+        );
+
+        // This packet goes to the control port (DGRAM).
+        let rx = MuxerRx::AcceptResponse {
+            local_port: 1030,
+            peer_port: self.control_port,
+            result,
+        };
+        push_packet(self.cid, rx, &self.rxq_dgram, &self.queue_dgram, &self.mem);
     }
 
     fn shutdown(&mut self, pkt: &VsockPacket) {
@@ -591,35 +592,35 @@ impl Proxy for TcpProxy {
             Shutdown::Write
         };
 
-        shutdown(self.fd, how);
+        if let Err(e) = shutdown(self.fd, how) {
+            warn!("error sending shutdown to socket: {}", e);
+        }
     }
 
     fn release(&mut self) -> ProxyUpdate {
-        debug!("release");
-        let mut update = ProxyUpdate::default();
-        update.remove_proxy = true;
-        update
+        debug!(
+            "release: id={}, tx_cnt={}, last_tx_cnt={}",
+            self.id, self.tx_cnt, self.last_tx_cnt_sent
+        );
+        ProxyUpdate {
+            remove_proxy: true,
+            ..Default::default()
+        }
     }
 
-    fn process_event(
-        &mut self,
-        evset: EventSet,
-        queue_rx: &mut VirtQueue,
-        queue_dr: &mut VirtQueue,
-        mem: &GuestMemoryMmap,
-    ) -> ProxyUpdate {
+    fn process_event(&mut self, evset: EventSet) -> ProxyUpdate {
         let mut update = ProxyUpdate::default();
 
         if evset.contains(EventSet::HANG_UP) {
             debug!("process_event: HANG_UP");
             if self.status == ProxyStatus::Connecting {
-                self.push_connect_rsp(-libc::ECONNREFUSED, queue_dr, mem);
+                self.push_connect_rsp(-libc::ECONNREFUSED);
             } else {
-                self.push_reset(queue_rx, mem);
+                self.push_reset();
             }
 
             self.status = ProxyStatus::Closed;
-            close(self.fd);
+            update.polling = Some((self.id, self.fd, EventSet::empty()));
             update.signal_queue = true;
             update.remove_proxy = true;
             return update;
@@ -628,40 +629,59 @@ impl Proxy for TcpProxy {
         if evset.contains(EventSet::IN) {
             debug!("process_event: IN");
             if self.status == ProxyStatus::Connected {
-                update.signal_queue = self.recv_pkt(queue_rx, mem);
+                let (signal_queue, wait_credit) = self.recv_pkt();
+                update.signal_queue = signal_queue;
+
+                if wait_credit && self.status != ProxyStatus::WaitingCreditUpdate {
+                    self.status = ProxyStatus::WaitingCreditUpdate;
+                    let rx = MuxerRx::CreditRequest {
+                        local_port: self.local_port,
+                        peer_port: self.peer_port,
+                        fwd_cnt: self.tx_cnt.0,
+                    };
+                    update.push_credit_req = Some(rx);
+                }
+
                 if self.status == ProxyStatus::Closed {
-                    self.push_reset(queue_rx, mem);
+                    debug!(
+                        "process_event: endpoint closed, sending reset: id={}",
+                        self.id
+                    );
+                    self.push_reset();
                     update.signal_queue = true;
-                    update.remove_proxy = true;
+                    update.polling = Some((self.id(), self.fd, EventSet::empty()));
                     return update;
                 } else if self.status == ProxyStatus::WaitingCreditUpdate {
+                    debug!("process_event: WaitingCreditUpdate");
                     update.polling = Some((self.id(), self.fd, EventSet::empty()));
                 }
             } else if self.status == ProxyStatus::Listening {
-                let result = match accept(self.fd) {
+                match accept(self.fd) {
                     Ok(accept_fd) => {
-                        fcntl::fcntl(
-                            accept_fd,
-                            fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK),
-                        );
+                        /*
+                        if let Err(e) = fcntl(accept_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)) {
+                            warn!("error setting nonblock: id={}, err={}", self.id, e);
+                        }
+                        */
                         update.new_proxy = Some((self.peer_port, accept_fd));
-                        0
                     }
-                    Err(e) => -(e as i32),
+                    Err(e) => warn!("error accepting connection: id={}, err={}", self.id, e),
                 };
-                //self.push_accept_rsp(result, queue_dr, mem);
                 update.signal_queue = true;
                 return update;
             } else {
-                error!("vsock::tcp: EventSet::IN while not connected");
+                debug!(
+                    "vsock::tcp: EventSet::IN while not connected: {:?}",
+                    self.status
+                );
             }
         }
 
         if evset.contains(EventSet::OUT) {
             debug!("process_event: OUT");
             if self.status == ProxyStatus::Connecting {
-                self.status = ProxyStatus::Connected;
-                self.push_connect_rsp(0, queue_dr, mem);
+                self.switch_to_connected();
+                self.push_connect_rsp(0);
                 update.signal_queue = true;
                 update.polling = Some((self.id(), self.fd, EventSet::IN));
             } else {
@@ -681,6 +701,8 @@ impl AsRawFd for TcpProxy {
 
 impl Drop for TcpProxy {
     fn drop(&mut self) {
-        close(self.fd);
+        if let Err(e) = close(self.fd) {
+            warn!("error closing proxy fd: {}", e);
+        }
     }
 }

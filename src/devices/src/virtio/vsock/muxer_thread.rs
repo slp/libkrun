@@ -1,13 +1,13 @@
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use super::super::Queue as VirtQueue;
 use super::super::VIRTIO_MMIO_INT_VRING;
-use super::muxer::ProxyMap;
+use super::muxer::{push_packet, MuxerRx, ProxyMap};
 use super::muxer_rxq::MuxerRxQ;
-use super::proxy::{ProxyStatus, ProxyUpdate};
+use super::proxy::ProxyUpdate;
 use super::tcp::TcpProxy;
 
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -22,13 +22,14 @@ pub struct MuxerThread {
     rxq_dgram: Arc<Mutex<MuxerRxQ>>,
     proxy_map: ProxyMap,
     mem: GuestMemoryMmap,
-    queue_rx: Arc<Mutex<VirtQueue>>,
-    queue_dr: Arc<Mutex<VirtQueue>>,
+    queue_stream: Arc<Mutex<VirtQueue>>,
+    queue_dgram: Arc<Mutex<VirtQueue>>,
     interrupt_evt: EventFd,
     interrupt_status: Arc<AtomicUsize>,
 }
 
 impl MuxerThread {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cid: u64,
         epoll: Epoll,
@@ -36,8 +37,8 @@ impl MuxerThread {
         rxq_dgram: Arc<Mutex<MuxerRxQ>>,
         proxy_map: ProxyMap,
         mem: GuestMemoryMmap,
-        queue_rx: Arc<Mutex<VirtQueue>>,
-        queue_dr: Arc<Mutex<VirtQueue>>,
+        queue_stream: Arc<Mutex<VirtQueue>>,
+        queue_dgram: Arc<Mutex<VirtQueue>>,
         interrupt_evt: EventFd,
         interrupt_status: Arc<AtomicUsize>,
     ) -> Self {
@@ -48,8 +49,8 @@ impl MuxerThread {
             rxq_dgram,
             proxy_map,
             mem,
-            queue_rx,
-            queue_dr,
+            queue_stream,
+            queue_dgram,
             interrupt_evt,
             interrupt_status,
         }
@@ -59,25 +60,38 @@ impl MuxerThread {
         thread::spawn(|| self.work());
     }
 
+    fn send_credit_request(&self, credit_rx: MuxerRx) {
+        debug!("send_credit_request");
+        push_packet(
+            self.cid,
+            credit_rx,
+            &self.rxq_stream,
+            &self.queue_stream,
+            &self.mem,
+        );
+    }
+
     pub fn update_polling(&self, id: u64, fd: RawFd, evset: EventSet) {
-        debug!("update_polling id={} fd={:?}", id, fd);
-        self.epoll
-            .ctl(ControlOperation::Delete, fd, &EpollEvent::default())
-            .unwrap();
+        debug!("update_polling id={} fd={:?} evset={:?}", id, fd, evset);
+        let _ = self
+            .epoll
+            .ctl(ControlOperation::Delete, fd, &EpollEvent::default());
         if !evset.is_empty() {
-            self.epoll
-                .ctl(
-                    ControlOperation::Add,
-                    fd,
-                    &EpollEvent::new(evset, id as u64),
-                )
-                .unwrap();
+            let _ = self.epoll.ctl(
+                ControlOperation::Add,
+                fd,
+                &EpollEvent::new(evset, id as u64),
+            );
         }
     }
 
     fn process_proxy_update(&self, id: u64, update: ProxyUpdate, thread_rng: &mut ThreadRng) {
         if let Some(polling) = update.polling {
             self.update_polling(polling.0, polling.1, polling.2);
+        }
+
+        if let Some(credit_rx) = update.push_credit_req {
+            self.send_credit_request(credit_rx);
         }
 
         if update.remove_proxy {
@@ -96,6 +110,9 @@ impl MuxerThread {
                 local_port,
                 peer_port,
                 accept_fd,
+                self.mem.clone(),
+                self.queue_stream.clone(),
+                self.queue_dgram.clone(),
                 self.rxq_stream.clone(),
                 self.rxq_dgram.clone(),
             );
@@ -103,29 +120,23 @@ impl MuxerThread {
                 .write()
                 .unwrap()
                 .insert(new_id, Mutex::new(Box::new(new_proxy)));
-            self.proxy_map
-                .read()
-                .unwrap()
-                .get(&new_id)
-                .map(|proxy_lock| {
-                    let mut proxy = proxy_lock.lock().unwrap();
-                    proxy.push_op_request(&mut self.queue_rx.lock().unwrap(), &self.mem);
-                });
+            if let Some(proxy) = self.proxy_map.read().unwrap().get(&new_id) {
+                proxy.lock().unwrap().push_op_request();
+            };
             should_signal = true;
         }
 
         if should_signal {
             self.interrupt_status
                 .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-            self.interrupt_evt.write(1).map_err(|e| {
-                error!("Failed to signal used queue: {:?}", e);
-            });
+            if let Err(e) = self.interrupt_evt.write(1) {
+                warn!("failed to signal used queue: {:?}", e);
+            }
         }
     }
 
     fn work(self) {
         let mut thread_rng = thread_rng();
-        error!("entry epoll fd={}", self.epoll.as_raw_fd());
         loop {
             let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
             match self
@@ -140,12 +151,7 @@ impl MuxerThread {
 
                         let update = self.proxy_map.read().unwrap().get(&id).map(|proxy_lock| {
                             let mut proxy = proxy_lock.lock().unwrap();
-                            proxy.process_event(
-                                evset,
-                                &mut self.queue_rx.lock().unwrap(),
-                                &mut self.queue_dr.lock().unwrap(),
-                                &self.mem,
-                            )
+                            proxy.process_event(evset)
                         });
 
                         if let Some(update) = update {
@@ -158,7 +164,5 @@ impl MuxerThread {
                 }
             }
         }
-
-        error!("exit epoll fd={}", self.epoll.as_raw_fd());
     }
 }

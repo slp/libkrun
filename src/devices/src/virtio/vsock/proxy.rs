@@ -1,26 +1,25 @@
 use std::fmt;
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use nix::sys::socket::Ipv4Addr;
-use vm_memory::GuestMemoryMmap;
-
-use super::super::Queue as VirtQueue;
 use super::muxer::MuxerRx;
-use super::muxer_rxq::MuxerRxQ;
-use super::packet::{
-    TsiAcceptReq, TsiConnectReq, TsiGetnameReq, TsiListenReq, TsiSendtoAddr, VsockPacket,
-};
+use super::packet::{TsiAcceptReq, TsiConnectReq, TsiListenReq, TsiSendtoAddr, VsockPacket};
 use utils::epoll::EventSet;
+
+#[derive(Debug)]
+pub enum RecvPkt {
+    Close,
+    Error,
+    Read(usize),
+    WaitForCredit,
+}
 
 #[derive(Debug)]
 pub enum ProxyError {
     CreatingSocket(nix::errno::Errno),
-    Connecting(nix::errno::Errno),
-    GettingPeerName(nix::errno::Errno),
-    PeerNeedsCreditUpdate,
+    SettingReusePort(nix::errno::Errno),
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ProxyStatus {
     Idle,
     Connecting,
@@ -31,24 +30,14 @@ pub enum ProxyStatus {
     ReverseInit,
 }
 
+#[derive(Default)]
 pub struct ProxyUpdate {
     pub signal_queue: bool,
     pub remove_proxy: bool,
     pub polling: Option<(u64, RawFd, EventSet)>,
     pub new_proxy: Option<(u32, RawFd)>,
     pub push_accept: Option<(u64, u64)>,
-}
-
-impl Default for ProxyUpdate {
-    fn default() -> ProxyUpdate {
-        ProxyUpdate {
-            signal_queue: false,
-            remove_proxy: false,
-            polling: None,
-            new_proxy: None,
-            push_accept: None,
-        }
-    }
+    pub push_credit_req: Option<MuxerRx>,
 }
 
 impl fmt::Display for ProxyError {
@@ -61,31 +50,18 @@ pub trait Proxy: Send + AsRawFd {
     fn id(&self) -> u64;
     fn status(&self) -> ProxyStatus;
     fn connect(&mut self, pkt: &VsockPacket, req: TsiConnectReq) -> ProxyUpdate;
-    fn confirm_connect(&mut self, pkt: &VsockPacket) {}
-    fn getpeername(&mut self, pkt: &VsockPacket, req: TsiGetnameReq);
-    fn sendmsg(&mut self, pkt: &VsockPacket);
+    fn confirm_connect(&mut self, _pkt: &VsockPacket) {}
+    fn getpeername(&mut self, pkt: &VsockPacket);
+    fn sendmsg(&mut self, pkt: &VsockPacket) -> ProxyUpdate;
     fn sendto_addr(&mut self, req: TsiSendtoAddr) -> ProxyUpdate;
-    fn sendto_data(&mut self, pkt: &VsockPacket) {}
+    fn sendto_data(&mut self, _pkt: &VsockPacket) {}
     fn listen(&mut self, pkt: &VsockPacket, req: TsiListenReq) -> ProxyUpdate;
     fn accept(&mut self, pkt: &VsockPacket, req: TsiAcceptReq) -> ProxyUpdate;
     fn update_peer_credit(&mut self, pkt: &VsockPacket) -> ProxyUpdate;
-    fn push_op_request(&mut self, queue: &mut VirtQueue, mem: &GuestMemoryMmap) {}
+    fn push_op_request(&self) {}
     fn process_op_response(&mut self, pkt: &VsockPacket) -> ProxyUpdate;
-    fn push_accept_rsp(
-        &mut self,
-        new_id: u64,
-        result: i32,
-        queue: &mut VirtQueue,
-        mem: &GuestMemoryMmap,
-    ) {
-    }
-    fn shutdown(&mut self, pkt: &VsockPacket) {}
+    fn push_accept_rsp(&self, _result: i32) {}
+    fn shutdown(&mut self, _pkt: &VsockPacket) {}
     fn release(&mut self) -> ProxyUpdate;
-    fn process_event(
-        &mut self,
-        evset: EventSet,
-        queue_rx: &mut VirtQueue,
-        queue_dr: &mut VirtQueue,
-        meme: &GuestMemoryMmap,
-    ) -> ProxyUpdate;
+    fn process_event(&mut self, evset: EventSet) -> ProxyUpdate;
 }
