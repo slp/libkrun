@@ -8,6 +8,8 @@ amd-sev = [ "codicon", "procfs", "reqwest", "serde", "serde_json", "sev", "ureq"
 
 [dependencies]
 libc = ">=0.2.39"
+openssl = "0.10.36"
+hex = "0.4.3"
 
 arch = { path = "../arch" }
 devices = { path = "../devices" }
@@ -23,7 +25,8 @@ procfs = { version = "0.10.1", optional = true }
 reqwest = { version = "0.9.15", optional = true }
 serde = { version = "1.0.125", optional = true }
 serde_json = { version = "1.0.64", optional = true }
-sev = { version = "0.1.0", features = ["openssl"], optional = true }
+#sev = { version = "0.1.0", features = ["openssl"], optional = true }
+sev = { path = "/home/slp/src-snp/sev", features = ["openssl"], optional = true }
 ureq = { version = "*", features = ["json"], optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

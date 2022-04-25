@@ -21,12 +21,12 @@ int main(int argc, char *const argv[])
 {
     char *envp[] =
     {
-        "TEST=works",
+	"TEST=works",
         0
     };
     char *const port_map[] =
     {
-        "18000:8000",
+        "2222:22",
         0
     };
     char *const rlimits[] =
@@ -100,12 +100,14 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
+    /*
     // Configure the rlimits that will be set in the guest
     if (err = krun_set_rlimits(ctx_id, &rlimits[0])) {
         errno = -err;
         perror("Error configuring rlimits");
         return -1;
     }
+    */
 
     // Set the working directory to "/", just for the sake of completeness.
     if (err = krun_set_workdir(ctx_id, "/")) {

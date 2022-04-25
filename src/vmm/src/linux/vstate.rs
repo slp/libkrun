@@ -358,6 +358,7 @@ pub type Result<T> = result::Result<T, Error>;
 
 #[cfg(feature = "amd-sev")]
 pub struct MeasuredRegion {
+    pub guest_addr: u64,
     pub host_addr: u64,
     pub size: usize,
 }
@@ -519,7 +520,7 @@ impl Vm {
         &self,
         guest_mem: &GuestMemoryMmap,
         measured_regions: Vec<MeasuredRegion>,
-    ) -> Result<Measurement> {
+    ) -> Result<Option<Measurement>> {
         self.sev
             .vm_attest(&self.fd, guest_mem, measured_regions)
             .map_err(Error::SecVirtAttest)
@@ -1085,6 +1086,7 @@ impl Vcpu {
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
     fn run_emulation(&mut self) -> Result<VcpuEmulation> {
+        //println!("run_emulation");
         match self.fd.run() {
             Ok(run) => match run {
                 #[cfg(target_arch = "x86_64")]

@@ -28,6 +28,9 @@ extern crate serde;
 #[cfg(feature = "amd-sev")]
 extern crate sev;
 
+extern crate hex;
+extern crate openssl;
+
 extern crate libc;
 extern crate polly;
 

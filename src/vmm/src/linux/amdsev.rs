@@ -3,8 +3,12 @@ use std::fmt;
 use std::fs::File;
 use std::mem::{size_of_val, MaybeUninit};
 use std::os::unix::io::AsRawFd;
+use std::slice;
 
 use super::vstate::MeasuredRegion;
+
+use hex::encode;
+use openssl::sha::Sha384;
 
 use codicon::{Decoder, Encoder};
 use kvm_bindings::kvm_enc_region;
@@ -164,10 +168,19 @@ impl AmdSev {
         let mut sev_es = false;
 
         let (start, session_id) = if let Some(ref server_url) = attestation_url {
+            /*
             let build = fw
                 .platform_status()
                 .map_err(|_| Error::PlatformStatus)?
                 .build;
+             */
+            let build = sev::Build {
+                version: sev::Version {
+                    major: 1,
+                    minor: 40,
+                },
+                build: 1,
+            };
 
             let response = ureq::post(format!("{}/session", server_url).as_str())
                 .send_json(ureq::json!(SessionRequest { build, chain }))
@@ -216,6 +229,28 @@ impl AmdSev {
         Ok(())
     }
 
+    fn sev_snp_init(&self, vm_fd: &VmFd) -> Result<(), kvm_ioctls::Error> {
+        #[repr(C)]
+        struct Data {
+            flags: u64,
+        }
+
+        let mut data = Data { flags: 0 };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: self.fw.as_raw_fd() as u32,
+            code: 22, // SNP_INIT
+        };
+
+        let ret = vm_fd.memory_encrypt(&mut cmd);
+        if ret.is_err() {
+            println!("snp_init: cmd.error={}", cmd.error);
+        }
+        ret
+    }
+
     fn sev_launch_start(&self, vm_fd: &VmFd) -> Result<(), kvm_ioctls::Error> {
         #[repr(C)]
         struct Data {
@@ -247,6 +282,36 @@ impl AmdSev {
         Ok(())
     }
 
+    fn sev_snp_launch_start(&self, vm_fd: &VmFd) -> Result<(), kvm_ioctls::Error> {
+        #[repr(C)]
+        struct Data {
+            policy: u64,
+            ma_uaddr: u64,
+            ma_en: u8,
+            imi_en: u8,
+            gosvw: [u8; 16],
+        }
+
+        let mut data = Data {
+            //policy: start.policy,
+            policy: 0x3002f,
+            ma_uaddr: 0,
+            ma_en: 0,
+            imi_en: 0,
+            gosvw: [0; 16],
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: self.fw.as_raw_fd() as u32,
+            code: 23, // SNP_LAUNCH_START
+        };
+
+        println!("snp_launch_start");
+        vm_fd.memory_encrypt(&mut cmd)
+    }
+
     fn sev_launch_update_data(
         &self,
         vm_fd: &VmFd,
@@ -272,6 +337,104 @@ impl AmdSev {
         };
 
         vm_fd.memory_encrypt(&mut cmd)?;
+        Ok(())
+    }
+
+    fn sev_snp_launch_update_data(
+        &self,
+        vm_fd: &VmFd,
+        data_gaddr: u64,
+        data_uaddr: u64,
+        data_size: usize,
+        ptype: u8,
+        current: &mut [u8],
+    ) -> Result<(), kvm_ioctls::Error> {
+        #[repr(C)]
+        struct Data {
+            gfn: u64,
+            addr: u64,
+            size: u32,
+            imi_page: u8,
+            page_type: u8,
+            vmpl3_perms: u8,
+            vmpl2_perms: u8,
+            vmpl1_perms: u8,
+        }
+
+        #[repr(packed)]
+        struct PageInfo {
+            current: [u8; 48],
+            contents: [u8; 48],
+            length: u16,
+            page_type: u8,
+            imi_page: u8,
+            resv: u32,
+            gpa: u64,
+        }
+
+        println!("snp_launch_update_data: {:x}, {}", data_gaddr, data_size);
+
+        let mut remaining = data_size;
+        let mut gaddr = data_gaddr;
+        let mut uaddr = data_uaddr;
+
+        while remaining > 0 {
+            let mut info = PageInfo {
+                current: [0; 48],
+                contents: [0; 48],
+                length: 112,
+                page_type: ptype,
+                imi_page: 0,
+                resv: 0,
+                gpa: gaddr,
+            };
+
+            info.current.copy_from_slice(current);
+
+            if ptype == 1 || ptype == 2 {
+                let mut hasher = Sha384::new();
+                hasher.update(unsafe {
+                    slice::from_raw_parts(uaddr as *const u64 as *const u8, 4096)
+                });
+                let hash = hasher.finish();
+                info.contents.copy_from_slice(&hash);
+            }
+
+            let mut hasher = Sha384::new();
+            hasher.update(unsafe {
+                slice::from_raw_parts(&info as *const PageInfo as *const u8, 112)
+            });
+            let hash = hasher.finish();
+            current.copy_from_slice(&hash);
+
+            let mut data = Data {
+                gfn: gaddr >> 12,
+                addr: uaddr as u64,
+                size: 4096u32,
+                imi_page: 0,
+                page_type: ptype,
+                vmpl3_perms: 0,
+                vmpl2_perms: 0,
+                vmpl1_perms: 0,
+            };
+
+            let mut cmd = SevCommand {
+                error: 0,
+                data: &mut data as *mut _ as u64,
+                fd: self.fw.as_raw_fd() as u32,
+                code: 24, // SNP_LAUNCH_UPDATE
+            };
+
+            debug!(
+                "update_data: gaddr={:x}, haddr={:x} size={:x}",
+                gaddr as u64, uaddr as u64, 4096u32
+            );
+            vm_fd.memory_encrypt(&mut cmd)?;
+
+            gaddr += 4096;
+            uaddr += 4096;
+            remaining -= 4096;
+        }
         Ok(())
     }
 
@@ -306,6 +469,34 @@ impl AmdSev {
             data: 0,
             fd: self.fw.as_raw_fd() as u32,
             code: 7, // SEV_LAUNCH_FINISH
+        };
+
+        vm_fd.memory_encrypt(&mut cmd)
+    }
+
+    fn sev_snp_launch_finish(&self, vm_fd: &VmFd) -> Result<(), kvm_ioctls::Error> {
+        #[repr(C)]
+        struct Data {
+            id_block_uaddr: u64,
+            id_auth_uaddr: u64,
+            id_block_en: u8,
+            auth_key_en: u8,
+            host_data: [u8; 32],
+        }
+
+        let mut data = Data {
+            id_block_uaddr: 0,
+            id_auth_uaddr: 0,
+            id_block_en: 0,
+            auth_key_en: 0,
+            host_data: [0; 32],
+        };
+
+        let mut cmd = SevCommand {
+            error: 0,
+            data: &mut data as *mut _ as u64,
+            fd: self.fw.as_raw_fd() as u32,
+            code: 25, // SNP_LAUNCH_FINISH
         };
 
         vm_fd.memory_encrypt(&mut cmd)
@@ -358,7 +549,8 @@ impl AmdSev {
     }
 
     pub fn vm_prepare(&self, vm_fd: &VmFd, guest_mem: &GuestMemoryMmap) -> Result<(), Error> {
-        self.sev_init(vm_fd).map_err(Error::SevInit)?;
+        //self.sev_init(vm_fd).map_err(Error::SevInit)?;
+        self.sev_snp_init(vm_fd).map_err(Error::SevInit)?;
 
         for region in guest_mem.iter() {
             // It's safe to unwrap because the guest address is valid.
@@ -374,7 +566,10 @@ impl AmdSev {
             }
         }
 
-        self.sev_launch_start(vm_fd)
+        //self.sev_launch_start(vm_fd)
+        //    .map_err(Error::SevLaunchStart)?;
+
+        self.sev_snp_launch_start(vm_fd)
             .map_err(Error::SevLaunchStart)?;
 
         Ok(())
@@ -385,20 +580,88 @@ impl AmdSev {
         vm_fd: &VmFd,
         guest_mem: &GuestMemoryMmap,
         measured_regions: Vec<MeasuredRegion>,
-    ) -> Result<Measurement, Error> {
+    ) -> Result<Option<Measurement>, Error> {
+        let mut current: [u8; 48] = [0; 48];
+
         for region in measured_regions {
-            self.sev_launch_update_data(vm_fd, region.host_addr, region.size)
-                .map_err(Error::SevLaunchUpdateData)?;
+            //self.sev_launch_update_data(vm_fd, region.host_addr, region.size)
+            //    .map_err(Error::SevLaunchUpdateData)?;
+            self.sev_snp_launch_update_data(
+                vm_fd,
+                region.guest_addr,
+                region.host_addr,
+                region.size,
+                1,
+                &mut current,
+            )
+            .map_err(Error::SevLaunchUpdateData)?;
         }
 
-        if self.sev_es {
-            self.sev_launch_update_vmsa(vm_fd)
-                .map_err(Error::SevLaunchUpdateVmsa)?;
-        }
+        // lidt
+        self.sev_snp_launch_update_data(
+            vm_fd,
+            0x0,
+            guest_mem.get_host_address(GuestAddress(0x0)).unwrap() as u64,
+            0x1000,
+            4,
+            &mut current,
+        )
+        .map_err(Error::SevLaunchUpdateData)?;
 
-        let measurement = self
-            .sev_launch_measure(vm_fd)
-            .map_err(Error::SevLaunchMeasure)?;
+        // cc_blob
+        self.sev_snp_launch_update_data(
+            vm_fd,
+            0x4000,
+            guest_mem.get_host_address(GuestAddress(0x4000)).unwrap() as u64,
+            0x1000,
+            4,
+            &mut current,
+        )
+        .map_err(Error::SevLaunchUpdateData)?;
+
+        // Secrets
+        self.sev_snp_launch_update_data(
+            vm_fd,
+            0x5000,
+            guest_mem.get_host_address(GuestAddress(0x5000)).unwrap() as u64,
+            0x1000,
+            5,
+            &mut current,
+        )
+        .map_err(Error::SevLaunchUpdateData)?;
+
+        // CPUID
+        self.sev_snp_launch_update_data(
+            vm_fd,
+            0x6000,
+            guest_mem.get_host_address(GuestAddress(0x6000)).unwrap() as u64,
+            0x1000,
+            6,
+            &mut current,
+        )
+        .map_err(Error::SevLaunchUpdateData)?;
+
+        // boot params + stack + initial pages
+        self.sev_snp_launch_update_data(
+            vm_fd,
+            0x7000,
+            guest_mem.get_host_address(GuestAddress(0x7000)).unwrap() as u64,
+            0x19000,
+            4,
+            &mut current,
+        )
+        .map_err(Error::SevLaunchUpdateData)?;
+
+        println!("SNP launch measurement={:?}", hex::encode(current));
+
+        //if self.sev_es {
+        //self.sev_launch_update_vmsa(vm_fd)
+        //    .map_err(Error::SevLaunchUpdateVmsa)?;
+        //}
+
+        //let measurement = self
+        //    .sev_launch_measure(vm_fd)
+        //    .map_err(Error::SevLaunchMeasure)?;
 
         if self.attestation_url.is_some() && self.session_id.is_some() {
             let secret_resp = ureq::post(&format!(
@@ -406,11 +669,12 @@ impl AmdSev {
                 self.attestation_url.as_ref().unwrap(),
                 self.session_id.as_ref().unwrap(),
             ))
-            .send_json(ureq::json!(measurement))
+            .send_json(ureq::json!("test".to_string()))
             .map_err(Error::AttestationRequest)?
             .into_string()
             .unwrap();
 
+            /*
             let secret: Secret =
                 serde_json::from_str(&secret_resp).map_err(Error::ParseAttestationSecret)?;
 
@@ -419,11 +683,16 @@ impl AmdSev {
                 .unwrap() as u64;
             self.sev_inject_secret(vm_fd, secret, secret_host_addr)
                 .map_err(Error::SevInjectSecret)?;
+            */
         }
 
-        self.sev_launch_finish(vm_fd)
+        //self.sev_launch_finish(vm_fd)
+        //    .map_err(Error::SevLaunchFinish)?;
+
+        self.sev_snp_launch_finish(vm_fd)
             .map_err(Error::SevLaunchFinish)?;
 
-        Ok(measurement)
+        //Ok(measurement)
+        Ok(None)
     }
 }

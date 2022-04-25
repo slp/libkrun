@@ -359,18 +359,21 @@ pub fn build_microvm(
 
         let mut measured_regions: Vec<MeasuredRegion> = vec![
             MeasuredRegion {
+                guest_addr: arch::BIOS_START,
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::BIOS_START))
                     .unwrap() as u64,
                 size: qboot_bundle.size,
             },
             MeasuredRegion {
+                guest_addr: kernel_bundle.guest_addr,
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(kernel_bundle.guest_addr))
                     .unwrap() as u64,
                 size: kernel_bundle.size,
             },
             MeasuredRegion {
+                guest_addr: arch::x86_64::layout::INITRD_START,
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::x86_64::layout::INITRD_START))
                     .unwrap() as u64,
@@ -378,21 +381,23 @@ pub fn build_microvm(
             },
         ];
 
+        /*
         if attestation_url.is_none() {
             measured_regions.push(MeasuredRegion {
+                guest_addr: arch::x86_64::layout::CMDLINE_START,
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::x86_64::layout::CMDLINE_START))
                     .unwrap() as u64,
                 size: 4096,
             })
         }
+        */
 
         measured_regions
     };
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    /*
     let serial_device = if cfg!(target_arch = "x86_64")
         || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
     {
@@ -404,9 +409,8 @@ pub fn build_microvm(
     } else {
         None
     };
-    */
 
-    let serial_device = None;
+    //let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -538,7 +542,7 @@ pub fn build_microvm(
 
     #[cfg(not(feature = "amd-sev"))]
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
-    attach_console_devices(&mut vmm, event_manager, intc.clone())?;
+    //attach_console_devices(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "amd-sev"))]
     attach_fs_devices(
         &mut vmm,

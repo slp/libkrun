@@ -1452,8 +1452,6 @@ dependencies = [
 [[package]]
 name = "sev"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14e7912c3660e45c8fc84f103ad9c17541c90bfb8dad2e36aeffbe1676bce8f2"
 dependencies = [
  "bitfield",
  "bitflags",
@@ -1834,12 +1832,14 @@ dependencies = [
  "codicon",
  "cpuid",
  "devices",
+ "hex",
  "hvf",
  "kernel",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
  "logger",
+ "openssl",
  "polly",
  "procfs",
  "reqwest",

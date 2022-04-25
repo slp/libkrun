@@ -23,7 +23,7 @@ pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 pci=of
 
 #[cfg(feature = "amd-sev")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 pci=off nomodules \
-                                          console=hvc0 root=/dev/vda rw quiet no-kvmapf";
+                                          console=ttyS0 earlyprintk=ttyS0 root=/dev/vda rw no-kvmapf swiotlb=65536";
 
 //pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules earlyprintk=ttyS0 \
 //                                          console=ttyS0";
