@@ -52,9 +52,17 @@ void set_rlimits(const char *rlimits)
     }
 }
 
+#ifdef __ROSETTA__
+char rosetta_binary[] = "/macos/rosetta\0";
+char binfmt_rosetta[] = ":rosetta:M:0:\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00:\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:/macos/rosetta:CF\n";
+#endif
+
 int main(int argc, char **argv)
 {
     struct ifreq ifr;
+#ifdef __ROSETTA__
+    int fd;
+#endif
     int pid;
     int pipefd[2];
     int sockfd;
@@ -148,6 +156,26 @@ int main(int argc, char **argv)
         perror("mount(/dev/shm)");
         exit(-1);
     }
+
+#ifdef __ROSETTA__
+    if (access(rosetta_binary, F_OK) == 0) {
+        if (mount("binfmt_misc", "/proc/sys/fs/binfmt_misc", "binfmt_misc",
+                  MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL) < 0) {
+            perror("mount(binfmt_misc)");
+            exit(-1);
+        } else {
+            fd = open("/proc/sys/fs/binfmt_misc/register", O_WRONLY);
+            if (fd >= 0) {
+                if (write(fd, &binfmt_rosetta[0], strlen(binfmt_rosetta)) < 0) {
+                    perror("write to binfmt_misc");
+                }
+                close(fd);
+            } else {
+                perror("open binfmt_misc");
+            }
+        }
+    }
+#endif
 
     /* May fail if already exists and that's fine. */
     symlink("/proc/self/fd", "/dev/fd");

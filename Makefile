@@ -9,6 +9,10 @@ ifeq ($(SEV),1)
     FEATURE_FLAGS := --features amd-sev
 endif
 
+ifeq ($(ROSETTA),1)
+    INIT_FLAGS = -D__ROSETTA__
+endif
+
 OS = $(shell uname -s)
 
 KRUN_BINARY_Linux = libkrun$(VARIANT).so.$(FULL_VERSION)
@@ -38,7 +42,7 @@ all: $(LIBRARY_RELEASE_$(OS))
 debug: $(LIBRARY_DEBUG_$(OS))
 
 $(INIT_BINARY): init/init.c
-	gcc -O2 -static -Wall -o $@ init/init.c
+	gcc -O2 -static -Wall $(INIT_FLAGS) -o $@ init/init.c
 
 $(LIBRARY_RELEASE_$(OS)): $(INIT_BINARY)
 	cargo build --release $(FEATURE_FLAGS)
