@@ -6,7 +6,6 @@ use std::collections::btree_map;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
 use std::fs::File;
-use std::io;
 use std::mem::{self, MaybeUninit};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
@@ -14,6 +13,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use std::{io, io::Read, io::Seek};
 
 use lru::LruCache;
 use vm_memory::ByteValued;
@@ -232,6 +232,25 @@ fn fstat(f: &File) -> io::Result<bindings::stat64> {
         Ok(st)
     } else {
         Err(linux_error(io::Error::last_os_error()))
+    }
+}
+
+const IOCTL_ROSETTA: u32 = 0x8045_6122;
+
+fn find_rosetta_string(reader: &mut io::BufReader<File>) -> Option<usize> {
+    let mut buf = vec![0u8; 4096];
+    let mut bytes_read = 0;
+
+    loop {
+        match reader.read(&mut buf) {
+            Ok(l) => {
+                if let Some(pos) = buf.windows(3).position(|window| window == b"Our") {
+                    return Some(bytes_read + pos);
+                }
+                bytes_read += l;
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -1960,6 +1979,52 @@ impl FileSystem for PassthroughFs {
             Err(linux_error(io::Error::last_os_error()))
         } else {
             Ok(res as u64)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ioctl(
+        &self,
+        _ctx: Context,
+        inode: Self::Inode,
+        _ohandle: Self::Handle,
+        _flags: u32,
+        cmd: u32,
+        _arg: u64,
+        _in_size: u32,
+        out_size: u32,
+    ) -> io::Result<Vec<u8>> {
+        let filepath = match self.get_path(inode) {
+            Ok(fp) => fp,
+            Err(_) => get_filepath(self.get_file(inode)?.as_raw_fd())?,
+        };
+
+        if cmd == IOCTL_ROSETTA {
+            // We interpret this command as "search the file for a string starting
+            // with 'Our' and read out_size bytes from that point into the output
+            // buffer".
+            //
+            // This is based on the information found in this article:
+            // https://threedots.ovh/blog/2022/06/quick-look-at-rosetta-on-linux/
+            let file = File::open(filepath)
+                .map_err(|_| linux_error(io::Error::from_raw_os_error(libc::EINVAL)))?;
+            let mut reader = io::BufReader::new(file);
+
+            match find_rosetta_string(&mut reader) {
+                Some(pos) => {
+                    let mut data = vec![0u8; out_size as usize];
+                    reader
+                        .seek(io::SeekFrom::Start(pos as u64))
+                        .map_err(|_| linux_error(io::Error::from_raw_os_error(libc::EINVAL)))?;
+                    reader
+                        .read_exact(&mut data)
+                        .map_err(|_| linux_error(io::Error::from_raw_os_error(libc::EINVAL)))?;
+                    Ok(data)
+                }
+                None => Err(linux_error(io::Error::from_raw_os_error(libc::EINVAL))),
+            }
+        } else {
+            Err(linux_error(io::Error::from_raw_os_error(libc::ENOSYS)))
         }
     }
 }
