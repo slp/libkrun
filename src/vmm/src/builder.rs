@@ -17,37 +17,38 @@ use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use devices::legacy::Gic;
 use devices::legacy::Serial;
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 use devices::virtio::VirtioShmRegion;
 use devices::virtio::{MmioTransport, Vsock};
 
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 use crate::resources::TeeConfig;
 #[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigwinch_handler;
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 use crate::vmm_config::block::BlockBuilder;
 use crate::vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 use crate::vmm_config::fs::FsBuilder;
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 use crate::vmm_config::kernel_bundle::{InitrdBundle, QbootBundle};
 #[cfg(target_os = "linux")]
 use crate::vstate::KvmContext;
-#[cfg(all(target_os = "linux", feature = "amd-sev"))]
+#[cfg(all(target_os = "linux", feature = "tee"))]
 use crate::vstate::MeasuredRegion;
 use crate::vstate::{Error as VstateError, Vcpu, VcpuConfig, Vm};
 use crate::{device_manager, VmmEventsObserver};
 use arch::ArchMemoryInfo;
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 use arch::InitrdConfig;
+use kvm_bindings::CpuId;
 use polly::event_manager::{Error as EventManagerError, EventManager};
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "amd-sev")))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
 use vm_memory::mmap::GuestRegionMmap;
-#[cfg(any(target_arch = "aarch64", feature = "amd-sev"))]
+#[cfg(any(target_arch = "aarch64", feature = "tee"))]
 use vm_memory::Bytes;
 #[cfg(target_os = "linux")]
 use vm_memory::GuestMemory;
@@ -315,12 +316,12 @@ pub fn build_microvm(
             .map_err(StartMicrovmError::KernelBundle)?
     };
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let qboot_bundle = vm_resources
         .qboot_bundle()
         .ok_or(StartMicrovmError::MissingKernelConfig)?;
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let initrd_bundle = vm_resources
         .initrd_bundle()
         .ok_or(StartMicrovmError::MissingKernelConfig)?;
@@ -333,9 +334,9 @@ pub fn build_microvm(
         kernel_region,
         kernel_bundle.guest_addr,
         kernel_bundle.size,
-        #[cfg(feature = "amd-sev")]
+        #[cfg(feature = "tee")]
         qboot_bundle,
-        #[cfg(feature = "amd-sev")]
+        #[cfg(feature = "tee")]
         initrd_bundle,
     )?;
     let vcpu_config = vm_resources.vcpu_config();
@@ -348,13 +349,13 @@ pub fn build_microvm(
         Some(s) => kernel_cmdline.insert_str(s).unwrap(),
     };
 
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     let mut vm = setup_vm(&guest_memory)?;
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let mut vm = setup_vm(&guest_memory, vm_resources.tee_config())?;
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let measured_regions = {
         vm.secure_virt_prepare(&guest_memory)
             .map_err(StartMicrovmError::SecureVirtPrepare)?;
@@ -366,24 +367,28 @@ pub fn build_microvm(
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::BIOS_START))
                     .unwrap() as u64,
+                guest_addr: arch::BIOS_START,
                 size: qboot_bundle.size,
             },
             MeasuredRegion {
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(kernel_bundle.guest_addr))
                     .unwrap() as u64,
+                guest_addr: kernel_bundle.guest_addr,
                 size: kernel_bundle.size,
             },
             MeasuredRegion {
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::x86_64::layout::INITRD_SEV_START))
                     .unwrap() as u64,
+                guest_addr: arch::x86_64::layout::INITRD_SEV_START,
                 size: initrd_bundle.size,
             },
             MeasuredRegion {
                 host_addr: guest_memory
                     .get_host_address(GuestAddress(arch::x86_64::layout::ZERO_PAGE_START))
                     .unwrap() as u64,
+                guest_addr: arch::x86_64::layout::ZERO_PAGE_START,
                 size: 4096,
             },
         ]
@@ -438,9 +443,9 @@ pub fn build_microvm(
     #[cfg(target_os = "macos")]
     let intc = Some(Arc::new(Mutex::new(devices::legacy::Gic::new())));
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "amd-sev")))]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
     let boot_ip: GuestAddress = GuestAddress(kernel_bundle.guest_addr);
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let boot_ip: GuestAddress = GuestAddress(arch::RESET_VECTOR);
 
     let vcpus;
@@ -511,7 +516,7 @@ pub fn build_microvm(
         )?;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "amd-sev")))]
+    #[cfg(all(target_os = "linux", not(feature = "tee")))]
     let shm_region = Some(VirtioShmRegion {
         host_addr: guest_memory
             .get_host_address(GuestAddress(arch_memory_info.shm_start_addr))
@@ -535,12 +540,12 @@ pub fn build_microvm(
         pio_device_manager,
     };
 
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
     attach_console_devices(&mut vmm, event_manager, intc.clone())?;
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     attach_fs_devices(
         &mut vmm,
         &vm_resources.fs,
@@ -548,7 +553,7 @@ pub fn build_microvm(
         shm_region,
         intc.clone(),
     )?;
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     attach_block_devices(&mut vmm, &vm_resources.block, event_manager, intc.clone())?;
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc)?;
@@ -560,25 +565,25 @@ pub fn build_microvm(
 
     // Write the kernel command line to guest memory. This is x86_64 specific, since on
     // aarch64 the command line will be specified through the FDT.
-    #[cfg(all(target_arch = "x86_64", not(feature = "amd-sev")))]
+    #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
     load_cmdline(&vmm)?;
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     let initrd_config = Some(InitrdConfig {
         address: GuestAddress(arch::x86_64::layout::INITRD_SEV_START as u64),
         size: arch::x86_64::layout::INITRD_SEV_SIZE,
     });
 
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     let initrd_config = None;
 
     vmm.configure_system(vcpus.as_slice(), &initrd_config)
         .map_err(StartMicrovmError::Internal)?;
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     {
         vmm.kvm_vm()
-            .secure_virt_attest(vmm.guest_memory(), measured_regions)
+            .secure_virt_attest(vmm.guest_memory(), &vcpus, measured_regions)
             .map_err(StartMicrovmError::SecureVirtAttest)?;
 
         println!("Starting TEE/microVM.");
@@ -596,7 +601,7 @@ pub fn build_microvm(
 }
 
 /// Creates GuestMemory of `mem_size_mib` MiB in size.
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "amd-sev")))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
 pub fn create_guest_memory(
     mem_size_mib: usize,
     kernel_region: MmapRegion,
@@ -621,7 +626,7 @@ pub fn create_guest_memory(
 }
 
 /// Creates GuestMemory of `mem_size_mib` MiB in size.
-#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "amd-sev"))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "tee"))]
 pub fn create_guest_memory(
     mem_size_mib: usize,
     kernel_region: MmapRegion,
@@ -682,7 +687,7 @@ pub fn create_guest_memory(
     Ok((guest_mem, arch_mem_info))
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "amd-sev")))]
+#[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
 fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
     kernel::loader::load_cmdline(
         vmm.guest_memory(),
@@ -694,7 +699,7 @@ fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
     .map_err(StartMicrovmError::LoadCommandline)
 }
 
-#[cfg(all(target_os = "linux", not(feature = "amd-sev")))]
+#[cfg(all(target_os = "linux", not(feature = "tee")))]
 pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
 ) -> std::result::Result<Vm, StartMicrovmError> {
@@ -709,7 +714,7 @@ pub(crate) fn setup_vm(
         .map_err(StartMicrovmError::Internal)?;
     Ok(vm)
 }
-#[cfg(all(target_os = "linux", feature = "amd-sev"))]
+#[cfg(all(target_os = "linux", feature = "tee"))]
 pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
     tee_config: &Option<TeeConfig>,
@@ -986,7 +991,7 @@ fn attach_mmio_device(
     Ok(())
 }
 
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 fn attach_fs_devices(
     vmm: &mut Vmm,
     fs_devs: &FsBuilder,
@@ -1093,7 +1098,7 @@ fn attach_unixsock_vsock_device(
     Ok(())
 }
 
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 fn attach_balloon_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
@@ -1124,7 +1129,7 @@ fn attach_balloon_device(
     Ok(())
 }
 
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
@@ -1156,7 +1161,7 @@ fn attach_block_devices(
     Ok(())
 }
 
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 fn attach_rng_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
