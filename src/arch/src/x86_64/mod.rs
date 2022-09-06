@@ -10,7 +10,7 @@ mod gdt;
 pub mod interrupts;
 /// Layout for the x86_64 system.
 pub mod layout;
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 mod mptable;
 /// Logic for configuring x86_64 model specific registers (MSRs).
 pub mod msr;
@@ -42,7 +42,7 @@ pub enum Error {
     /// Invalid e820 setup params.
     E820Configuration,
     /// Error writing MP table to memory.
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     MpTableSetup(mptable::Error),
     /// Error writing the zero page of guest memory.
     ZeroPageSetup,
@@ -67,7 +67,7 @@ pub const MMIO_SHM_SIZE: u64 = 1 << 29;
 /// These should be used to configure the GuestMemoryMmap structure for the platform.
 /// Make a hole for the kernel region that will be injected directly from libkrunfw's
 /// mapping, and reserve an SHM region for virtio-fs.
-#[cfg(not(feature = "amd-sev"))]
+#[cfg(not(feature = "tee"))]
 pub fn arch_memory_regions(
     size: usize,
     kernel_load_addr: u64,
@@ -90,6 +90,7 @@ pub fn arch_memory_regions(
                 vec![
                     (GuestAddress(0), kernel_load_addr as usize),
                     (GuestAddress(kernel_load_addr + kernel_size as u64), size),
+                    (GuestAddress(0xFEE00000), 0x1000),
                     (GuestAddress(FIRST_ADDR_PAST_32BITS), MMIO_SHM_SIZE as usize),
                 ],
             )
@@ -126,7 +127,7 @@ pub fn arch_memory_regions(
 /// For SEV, don't make a hole for the kernel, as it needs to be copied instead of injected,
 /// don't reserve an SHM region, as virtio-fs is not supported, and reserve a small 64K
 /// region for the BIOS.
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 pub fn arch_memory_regions(
     size: usize,
     kernel_load_addr: u64,
@@ -224,7 +225,7 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     mptable::setup_mptable(guest_mem, num_cpus).map_err(Error::MpTableSetup)?;
 
     let mut params: BootParamsWrapper = BootParamsWrapper(boot_params::default());
@@ -239,11 +240,13 @@ pub fn configure_system(
     if let Some(initrd_config) = initrd {
         params.0.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
         params.0.hdr.ramdisk_size = initrd_config.size as u32;
+        println!("initrd: image={:x}, size={}", initrd_config.address.raw_value() as u32, initrd_config.size as u32);
     }
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     {
-        params.0.hdr.syssize = num_cpus as u32;
+        params.0.hdr.root_flags = num_cpus as u16;
+        params.0.hdr.syssize = (arch_memory_info.ram_last_addr / 4096) as u32;
     }
 
     add_e820_entry(&mut params.0, 0, EBDA_START, E820_RAM)?;
@@ -350,7 +353,7 @@ mod tests {
         let info = ArchMemoryInfo::default();
         let config_err = configure_system(&gm, &info, GuestAddress(0), 0, &None, 1);
         assert!(config_err.is_err());
-        #[cfg(not(feature = "amd-sev"))]
+        #[cfg(not(feature = "tee"))]
         assert_eq!(
             config_err.unwrap_err(),
             super::Error::MpTableSetup(mptable::Error::NotEnoughMemory)

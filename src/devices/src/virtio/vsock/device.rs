@@ -22,7 +22,7 @@ use super::super::{
 use super::muxer::VsockMuxer;
 use super::packet::VsockPacket;
 use super::{defs, defs::uapi};
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 
 pub(crate) const RXQ_INDEX: usize = 0;
 pub(crate) const TXQ_INDEX: usize = 1;
@@ -53,7 +53,7 @@ pub struct Vsock {
     pub(crate) interrupt_evt: EventFd,
     pub(crate) activate_evt: EventFd,
     pub(crate) device_state: DeviceState,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -117,7 +117,7 @@ impl Vsock {
         defs::VSOCK_DEV_ID
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<IrqChip>>) {
         self.intc = Some(intc);
     }
 
@@ -128,11 +128,15 @@ impl Vsock {
     /// Signal the guest driver that we've used some virtio buffers that it had previously made
     /// available.
     pub fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
-        debug!("vsock: raising IRQ");
+        println!("vsock: raising IRQ");
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
             intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+            self.interrupt_evt.write(1).map_err(|e| {
+                error!("Failed to signal used queue: {:?}", e);
+                DeviceError::FailedSignalingUsedQueue(e)
+            });
             Ok(())
         } else {
             self.interrupt_evt.write(1).map_err(|e| {

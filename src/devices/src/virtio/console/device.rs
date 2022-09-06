@@ -18,7 +18,7 @@ use super::super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
 };
 use super::{defs, defs::uapi};
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 use crate::Error as DeviceError;
 
 pub(crate) const RXQ_INDEX: usize = 0;
@@ -88,7 +88,7 @@ pub struct Console {
     output: Box<dyn io::Write + Send>,
     configured: bool,
     pub(crate) interactive: bool,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -146,7 +146,7 @@ impl Console {
         defs::CONSOLE_DEV_ID
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<IrqChip>>) {
         self.intc = Some(intc);
     }
 
@@ -166,6 +166,10 @@ impl Console {
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
             intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+            self.interrupt_evt.write(1).map_err(|e| {
+                error!("Failed to signal used queue: {:?}", e);
+                DeviceError::FailedSignalingUsedQueue(e)
+            });
             Ok(())
         } else {
             self.interrupt_evt.write(1).map_err(|e| {

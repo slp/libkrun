@@ -22,6 +22,7 @@ int main(int argc, char *const argv[])
     char *const envp[] =
     {
         "TEST=works",
+	"KRUN_HOME=/root",
         0
     };
     char *const port_map[] =

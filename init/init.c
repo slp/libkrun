@@ -61,8 +61,11 @@ static void set_rlimits(const char *rlimits)
 }
 
 #ifdef SEV
+char pass[] = "mysecretpassphrase";
+
 static char * get_luks_passphrase(int *pass_len)
 {
+	/*
 	char *pass = NULL;
 	int len;
 	int fd;
@@ -110,6 +113,9 @@ cleanup_dir:
 	rmdir("/sfs");
 
 	return pass;
+	*/
+	*pass_len = sizeof(pass);
+	return &pass[0];
 }
 
 static int chroot_luks()

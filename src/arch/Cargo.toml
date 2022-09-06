@@ -5,7 +5,9 @@ authors = ["The Chromium OS Authors"]
 edition = "2021"
 
 [features]
-amd-sev = []
+tee = [ ]
+amd-sev = [ "tee" ]
+intel-tdx = [ "tee" ]
 
 [dependencies]
 libc = ">=0.2.39"

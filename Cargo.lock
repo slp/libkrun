@@ -62,6 +62,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
 
 [[package]]
+name = "bit_field"
+version = "0.1.0"
+dependencies = [
+ "bit_field_derive",
+]
+
+[[package]]
+name = "bit_field_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "bitfield"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,10 +199,13 @@ name = "devices"
 version = "0.1.0"
 dependencies = [
  "arch",
+ "bit_field",
  "bitflags",
  "crossbeam-channel",
  "env_logger",
  "hvf",
+ "kvm-bindings",
+ "kvm-ioctls",
  "libc",
  "log",
  "lru",
@@ -339,8 +358,6 @@ dependencies = [
 [[package]]
 name = "kvm-bindings"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a78c049190826fff959994b7c1d8a2930d0a348f1b8f3aa4f9bb34cd5d7f2952"
 dependencies = [
  "vmm-sys-util",
 ]
@@ -348,8 +365,6 @@ dependencies = [
 [[package]]
 name = "kvm-ioctls"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97422ba48d7ffb66fd4d18130f72ab66f9bbbf791fb7a87b9291cdcfec437593"
 dependencies = [
  "kvm-bindings",
  "libc",

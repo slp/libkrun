@@ -21,8 +21,10 @@ use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
 
 #[cfg(feature = "amd-sev")]
 use super::amdsev::{AmdSev, Error as SevError};
+#[cfg(feature = "intel-tdx")]
+use super::inteltdx::{Error as TdxError, IntelTdx};
 
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 use crate::resources::TeeConfig;
 use crate::vmm_config::machine_config::CpuFeaturesTemplate;
 use arch;
@@ -32,12 +34,14 @@ use arch::aarch64::gic::GICDevice;
 use cpuid::{c3, filter_cpuid, t2, VmSpec};
 #[cfg(target_arch = "x86_64")]
 use kvm_bindings::{
-    kvm_clock_data, kvm_debugregs, kvm_irqchip, kvm_lapic_state, kvm_mp_state, kvm_pit_config,
-    kvm_pit_state2, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave, CpuId, MsrList,
-    Msrs, KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
-    KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
+    kvm_clock_data, kvm_debugregs, kvm_enable_cap, kvm_irqchip, kvm_lapic_state, kvm_mp_state,
+    kvm_pit_config, kvm_pit_state2, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
+    CpuId, MsrList, Msrs, KVM_CAP_SPLIT_IRQCHIP, KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC,
+    KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
-use kvm_bindings::{kvm_userspace_memory_region, KVM_API_VERSION};
+use kvm_bindings::{
+    kvm_irq_routing_entry, kvm_irq_routing_irqchip, kvm_userspace_memory_region, KVM_API_VERSION,
+};
 use kvm_ioctls::*;
 use utils::eventfd::EventFd;
 use utils::signal::{register_signal_handler, sigrtmin, Killable};
@@ -80,7 +84,7 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     /// Cannot set the local interruption due to bad configuration.
     LocalIntConfiguration(arch::x86_64::interrupts::Error),
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     /// Missing TEE config
     MissingTeeConfig,
     #[cfg(target_arch = "x86_64")]
@@ -108,6 +112,18 @@ pub enum Error {
     #[cfg(feature = "amd-sev")]
     /// Error attesting the Secure VM.
     SecVirtAttest(SevError),
+    #[cfg(feature = "intel-tdx")]
+    /// Error initializing the Secure Virtualization Backend.
+    SecVirtInit(TdxError),
+    #[cfg(feature = "intel-tdx")]
+    /// Error preparing the VM for Secure Virtualization.
+    SecVirtPrepare(TdxError),
+    #[cfg(feature = "intel-tdx")]
+    /// Error attesting the Secure VM.
+    SecVirtAttest(TdxError),
+    #[cfg(feature = "intel-tdx")]
+    /// Error attesting the Secure VM.
+    TdxVcpuInit(TdxError),
     /// Failed to signal Vcpu.
     SignalVcpu(utils::errno::Error),
     #[cfg(target_arch = "x86_64")]
@@ -247,7 +263,7 @@ impl Display for Error {
                 e
             ),
             SetUserMemoryRegion(e) => write!(f, "Cannot set the memory regions: {}", e),
-            #[cfg(feature = "amd-sev")]
+            #[cfg(feature = "tee")]
             SecVirtInit(e) => {
                 write!(
                     f,
@@ -255,16 +271,18 @@ impl Display for Error {
                     e
                 )
             }
-            #[cfg(feature = "amd-sev")]
+            #[cfg(feature = "tee")]
             SecVirtPrepare(e) => write!(
                 f,
                 "Error preparing the VM for Secure Virtualization: {:?}",
                 e
             ),
-            #[cfg(feature = "amd-sev")]
+            #[cfg(feature = "tee")]
             SecVirtAttest(e) => write!(f, "Error attesting the Secure VM: {:?}", e),
+            #[cfg(feature = "intel-tdx")]
+            TdxVcpuInit(e) => write!(f, "Error initializing TDX vCPU: {:?}", e),
             SignalVcpu(e) => write!(f, "Failed to signal Vcpu: {}", e),
-            #[cfg(feature = "amd-sev")]
+            #[cfg(feature = "tee")]
             MissingTeeConfig => write!(f, "Missing TEE configuration"),
             #[cfg(target_arch = "x86_64")]
             MSRSConfiguration(e) => write!(f, "Error configuring the MSR registers: {:?}", e),
@@ -361,9 +379,10 @@ impl Display for Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
-#[cfg(feature = "amd-sev")]
+#[cfg(feature = "tee")]
 pub struct MeasuredRegion {
     pub host_addr: u64,
+    pub guest_addr: u64,
     pub size: usize,
 }
 
@@ -416,6 +435,65 @@ impl KvmContext {
     }
 }
 
+fn create_boot_gsi_entries() -> Vec<kvm_irq_routing_entry> {
+    let mut entries = Vec::new();
+    let msi_address = 4276092928u64;
+
+    entries.push(kvm_irq_routing_entry {
+        gsi: 5,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 33,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 6,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 34,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 7,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 35,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 4,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 36,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries
+}
+
 /// A wrapper around creating and using a VM.
 pub struct Vm {
     fd: VmFd,
@@ -433,11 +511,13 @@ pub struct Vm {
 
     #[cfg(feature = "amd-sev")]
     sev: AmdSev,
+    #[cfg(feature = "intel-tdx")]
+    tdx: IntelTdx,
 }
 
 impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
-    #[cfg(not(feature = "amd-sev"))]
+    #[cfg(not(feature = "tee"))]
     pub fn new(kvm: &Kvm) -> Result<Self> {
         //create fd for interacting with kvm-vm specific functions
         let vm_fd = kvm.create_vm().map_err(Error::VmFd)?;
@@ -490,6 +570,58 @@ impl Vm {
         })
     }
 
+    #[cfg(feature = "intel-tdx")]
+    pub fn new(kvm: &Kvm, tee_config: &Option<TeeConfig>) -> Result<Self> {
+        //create fd for interacting with kvm-vm specific functions
+        let vm_fd = kvm.create_vm_with_type(2).map_err(Error::VmFd)?;
+
+        let mut cpuid = kvm
+            .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+            .map_err(Error::VmFd)?;
+
+        let supported_msrs =
+            arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+
+        let tdx = {
+            if let Some(config) = tee_config {
+                IntelTdx::new(config)
+            } else {
+                return Err(Error::MissingTeeConfig);
+            }
+        };
+
+        let caps = tdx.tdx_capabilities(kvm).unwrap();
+        for entry in cpuid.as_mut_slice().iter_mut() {
+            match entry.function {
+                0xd => {
+                    let xcr0_mask: u64 = 0x82ff;
+                    let xss_mask: u64 = !xcr0_mask;
+                    if entry.index == 0 {
+                        entry.eax &= (caps.xfam_fixed0 as u32) & (xcr0_mask as u32);
+                        entry.eax |= (caps.xfam_fixed1 as u32) & (xcr0_mask as u32);
+                        entry.edx &= ((caps.xfam_fixed0 & xcr0_mask) >> 32) as u32;
+                        entry.edx |= ((caps.xfam_fixed1 & xcr0_mask) >> 32) as u32;
+                    } else if entry.index == 1 {
+                        entry.ecx &= (caps.xfam_fixed0 as u32) & (xss_mask as u32);
+                        entry.ecx |= (caps.xfam_fixed1 as u32) & (xss_mask as u32);
+                        entry.edx &= ((caps.xfam_fixed0 & xss_mask) >> 32) as u32;
+                        entry.edx |= ((caps.xfam_fixed1 & xss_mask) >> 32) as u32;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Vm {
+            fd: vm_fd,
+            supported_cpuid: cpuid,
+            supported_msrs,
+            #[cfg(target_arch = "aarch64")]
+            irqchip_handle: None,
+            tdx,
+        })
+    }
+
     /// Returns a ref to the supported `CpuId` for this Vm.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn supported_cpuid(&self) -> &CpuId {
@@ -539,27 +671,29 @@ impl Vm {
         Ok(())
     }
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     pub fn secure_virt_prepare(&mut self, guest_mem: &GuestMemoryMmap) -> Result<()> {
-        self.sev
-            .vm_prepare(&self.fd, guest_mem)
+        self.tdx
+            .vm_prepare(&self.fd, guest_mem, &self.supported_cpuid)
             .map_err(Error::SecVirtPrepare)
     }
 
-    #[cfg(feature = "amd-sev")]
+    #[cfg(feature = "tee")]
     pub fn secure_virt_attest(
         &self,
         guest_mem: &GuestMemoryMmap,
+        vcpus: &Vec<Vcpu>,
         measured_regions: Vec<MeasuredRegion>,
     ) -> Result<()> {
-        self.sev
-            .vm_attest(&self.fd, guest_mem, measured_regions)
+        self.tdx
+            .vm_attest(&self.fd, guest_mem, vcpus, measured_regions)
             .map_err(Error::SecVirtAttest)
     }
 
     /// Creates the irq chip and an in-kernel device model for the PIT.
     #[cfg(target_arch = "x86_64")]
     pub fn setup_irqchip(&self) -> Result<()> {
+        /*
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         let pit_config = kvm_pit_config {
             // We need to enable the emulation of a dummy speaker port stub so that writing to port
@@ -567,7 +701,23 @@ impl Vm {
             flags: KVM_PIT_SPEAKER_DUMMY,
             ..Default::default()
         };
+
         self.fd.create_pit2(pit_config).map_err(Error::VmSetup)
+            */
+
+        use kvm_bindings::IrqRouting;
+        let mut cap = kvm_enable_cap {
+            cap: KVM_CAP_SPLIT_IRQCHIP,
+            ..Default::default()
+        };
+        cap.args[0] = 24u64;
+        self.fd.enable_cap(&cap).unwrap();
+
+        //let entry_vec = create_boot_gsi_entries();
+        //let irq_routing = IrqRouting::from_entries(&entry_vec).unwrap();
+        //self.fd.set_gsi_routing(&irq_routing).unwrap();
+
+        Ok(())
     }
 
     /// Creates the GIC (Global Interrupt Controller).
@@ -922,13 +1072,16 @@ impl Vcpu {
             .set_cpuid2(&self.cpuid)
             .map_err(Error::VcpuSetCpuid)?;
 
-        arch::x86_64::msr::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
-        arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.raw_value() as u64, self.id)
-            .map_err(Error::REGSConfiguration)?;
-        arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
-        arch::x86_64::regs::setup_sregs(guest_mem, &self.fd, self.id)
-            .map_err(Error::SREGSConfiguration)?;
-        arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
+        #[cfg(not(feature = "intel-tdx"))]
+        {
+            arch::x86_64::msr::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
+            arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.raw_value() as u64, self.id)
+                .map_err(Error::REGSConfiguration)?;
+            arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
+            arch::x86_64::regs::setup_sregs(guest_mem, &self.fd, self.id)
+                .map_err(Error::SREGSConfiguration)?;
+            arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
+        }
         Ok(())
     }
 
@@ -1005,6 +1158,11 @@ impl Vcpu {
         {
             super::super::Vmm::log_boot_time(&self.create_ts);
         }
+    }
+
+    #[cfg(feature = "intel-tdx")]
+    pub fn init_tdx(&self, tdx: &IntelTdx) -> Result<()> {
+        tdx.init_vcpu(&self.fd).map_err(Error::TdxVcpuInit)
     }
 
     #[allow(unused)]
@@ -1131,23 +1289,31 @@ impl Vcpu {
             Ok(run) => match run {
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoIn(addr, data) => {
+                    if addr < 0x3f8 || addr > 0x3fd {
+                        //println!("ioin: {:x}", addr);
+                    }
                     self.io_bus.read(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoOut(addr, data) => {
+                    if addr < 0x3f8 || addr > 0x3fd {
+                        //println!("ioout: {:x}", addr);
+                    }
                     self.check_boot_complete_signal(u64::from(addr), data);
 
                     self.io_bus.write(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioRead(addr, data) => {
+                    //println!("mmioread: {:x}", addr);
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         mmio_bus.read(0, addr, data);
                     }
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioWrite(addr, data) => {
+                    //println!("mmiowrite: {:x}", addr);
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         #[cfg(target_arch = "aarch64")]
                         self.check_boot_complete_signal(addr, data);
@@ -1173,6 +1339,21 @@ impl Vcpu {
                 VcpuExit::InternalError => {
                     error!("Received KVM_EXIT_INTERNAL_ERROR signal");
                     Err(Error::VcpuUnhandledKvmExit)
+                }
+                VcpuExit::Tdx => {
+                    println!("TdxExit");
+                    let kvm_run = self.fd.get_kvm_run();
+                    let tdx_vmcall = unsafe { &mut kvm_run.__bindgen_anon_1.tdx.u.vmcall };
+
+                    tdx_vmcall.status_code = 0x8000000000000000; //TDG_VP_VMCALL_INVALID_OPERAND;
+
+                    if tdx_vmcall.type_ != 0 {
+                        println!("Unknown Tdx Vm Call");
+                        Err(Error::VcpuUnhandledKvmExit)
+                    } else {
+                        println!("Tdx subcall: {:x}", tdx_vmcall.subfunction);
+                        Ok(VcpuEmulation::Handled)
+                    }
                 }
                 r => {
                     // TODO: Are we sure we want to finish running a vcpu upon
