@@ -26,7 +26,7 @@ use super::{
     Error, CONFIG_SPACE_SIZE, QUEUE_SIZES, SECTOR_SHIFT, SECTOR_SIZE,
 };
 
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 use crate::virtio::VIRTIO_MMIO_INT_CONFIG;
 use crate::Error as DeviceError;
 
@@ -188,7 +188,7 @@ pub struct Block {
     pub(crate) root_device: bool,
 
     // Interrupt specific fields.
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -353,7 +353,7 @@ impl Block {
         Ok(())
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<IrqChip>>) {
         self.intc = Some(intc);
     }
 

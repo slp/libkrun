@@ -32,12 +32,14 @@ use arch::aarch64::gic::GICDevice;
 use cpuid::{c3, filter_cpuid, t2, VmSpec};
 #[cfg(target_arch = "x86_64")]
 use kvm_bindings::{
-    kvm_clock_data, kvm_debugregs, kvm_irqchip, kvm_lapic_state, kvm_mp_state, kvm_pit_config,
-    kvm_pit_state2, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave, CpuId, MsrList,
-    Msrs, KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
-    KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
+    kvm_clock_data, kvm_debugregs, kvm_enable_cap, kvm_irqchip, kvm_lapic_state, kvm_mp_state,
+    kvm_pit_config, kvm_pit_state2, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
+    CpuId, MsrList, Msrs, KVM_CAP_SPLIT_IRQCHIP, KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC,
+    KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
-use kvm_bindings::{kvm_userspace_memory_region, KVM_API_VERSION};
+use kvm_bindings::{
+    kvm_irq_routing_entry, kvm_irq_routing_irqchip, kvm_userspace_memory_region, KVM_API_VERSION,
+};
 use kvm_ioctls::*;
 use utils::eventfd::EventFd;
 use utils::signal::{register_signal_handler, sigrtmin, Killable};
@@ -416,6 +418,92 @@ impl KvmContext {
     }
 }
 
+fn create_boot_gsi_entries() -> Vec<kvm_irq_routing_entry> {
+    let mut entries = Vec::new();
+    let msi_address = 4276092928u64;
+
+    entries.push(kvm_irq_routing_entry {
+        gsi: 8,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 33,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 5,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 34,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 7,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 35,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 6,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 36,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 9,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 37,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    entries.push(kvm_irq_routing_entry {
+        gsi: 4,
+        type_: kvm_bindings::KVM_IRQ_ROUTING_MSI,
+        u: kvm_bindings::kvm_irq_routing_entry__bindgen_ty_1 {
+            msi: kvm_bindings::kvm_irq_routing_msi {
+                address_lo: msi_address as u32,
+                address_hi: (msi_address >> 32) as u32,
+                data: 38,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+
+    entries
+}
+
 /// A wrapper around creating and using a VM.
 pub struct Vm {
     fd: VmFd,
@@ -560,6 +648,7 @@ impl Vm {
     /// Creates the irq chip and an in-kernel device model for the PIT.
     #[cfg(target_arch = "x86_64")]
     pub fn setup_irqchip(&self) -> Result<()> {
+        /*
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         let pit_config = kvm_pit_config {
             // We need to enable the emulation of a dummy speaker port stub so that writing to port
@@ -567,7 +656,23 @@ impl Vm {
             flags: KVM_PIT_SPEAKER_DUMMY,
             ..Default::default()
         };
+
         self.fd.create_pit2(pit_config).map_err(Error::VmSetup)
+            */
+
+        use kvm_bindings::IrqRouting;
+        let mut cap = kvm_enable_cap {
+            cap: KVM_CAP_SPLIT_IRQCHIP,
+            ..Default::default()
+        };
+        cap.args[0] = 24u64;
+        self.fd.enable_cap(&cap).unwrap();
+
+        let entry_vec = create_boot_gsi_entries();
+        let irq_routing = IrqRouting::from_entries(&entry_vec).unwrap();
+        self.fd.set_gsi_routing(&irq_routing).unwrap();
+
+        Ok(())
     }
 
     /// Creates the GIC (Global Interrupt Controller).
@@ -1131,23 +1236,31 @@ impl Vcpu {
             Ok(run) => match run {
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoIn(addr, data) => {
+                    if addr < 0x3f8 || addr > 0x3fd {
+                        println!("ioin: {:x}", addr);
+                    }
                     self.io_bus.read(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoOut(addr, data) => {
+                    if addr < 0x3f8 || addr > 0x3fd {
+                        println!("ioout: {:x}", addr);
+                    }
                     self.check_boot_complete_signal(u64::from(addr), data);
 
                     self.io_bus.write(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioRead(addr, data) => {
+                    println!("mmioread: {:x}", addr);
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         mmio_bus.read(0, addr, data);
                     }
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioWrite(addr, data) => {
+                    println!("mmiowrite: {:x}", addr);
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         #[cfg(target_arch = "aarch64")]
                         self.check_boot_complete_signal(addr, data);

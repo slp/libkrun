@@ -321,8 +321,11 @@ mod tests {
             DummyDevice {
                 dummy: 0,
                 queues: QUEUE_SIZES.iter().map(|&s| Queue::new(s)).collect(),
-                queue_evts: [EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD")],
-                interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD"),
+                queue_evts: [
+                    EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD")
+                ],
+                interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)
+                    .expect("cannot create eventFD"),
             }
         }
     }

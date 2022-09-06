@@ -17,8 +17,8 @@ use std::fmt::{Display, Formatter, Result};
 //                                          i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd";
 
 #[cfg(all(target_os = "linux", not(feature = "amd-sev")))]
-pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=hvc0 \
-                                          rootfstype=virtiofs rw quiet no-kvmapf tsi_hijack";
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=ttyS0 \
+                                          rootfstype=virtiofs rw no-kvmapf tsi_hijack earlyprintk=ttyS0";
 
 #[cfg(feature = "amd-sev")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=hvc0 \

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use super::super::super::legacy::Gic;
+use super::super::super::legacy::IrqChip;
 use super::super::Queue as VirtQueue;
 use super::super::VIRTIO_MMIO_INT_VRING;
 use super::muxer::{push_packet, MuxerRx, ProxyMap};
@@ -28,7 +28,7 @@ pub struct MuxerThread {
     queue_dgram: Arc<Mutex<VirtQueue>>,
     interrupt_evt: EventFd,
     interrupt_status: Arc<AtomicUsize>,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     irq_line: Option<u32>,
     reaper_sender: Sender<u64>,
 }
@@ -46,7 +46,7 @@ impl MuxerThread {
         queue_dgram: Arc<Mutex<VirtQueue>>,
         interrupt_evt: EventFd,
         interrupt_status: Arc<AtomicUsize>,
-        intc: Option<Arc<Mutex<Gic>>>,
+        intc: Option<Arc<Mutex<IrqChip>>>,
         irq_line: Option<u32>,
         reaper_sender: Sender<u64>,
     ) -> Self {

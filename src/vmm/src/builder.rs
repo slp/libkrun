@@ -15,7 +15,7 @@ use super::{Error, Vmm};
 #[cfg(target_arch = "x86_64")]
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
-use devices::legacy::Gic;
+use devices::legacy::IrqChip;
 use devices::legacy::Serial;
 #[cfg(not(feature = "amd-sev"))]
 use devices::virtio::VirtioShmRegion;
@@ -391,7 +391,6 @@ pub fn build_microvm(
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    /*
     let serial_device = if cfg!(target_arch = "x86_64")
         || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
     {
@@ -403,9 +402,8 @@ pub fn build_microvm(
     } else {
         None
     };
-    */
 
-    let serial_device = None;
+    //let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -434,9 +432,11 @@ pub fn build_microvm(
     );
 
     #[cfg(target_os = "linux")]
-    let intc = None;
+    let intc: Option<Arc<Mutex<IrqChip>>> =
+        Some(Arc::new(Mutex::new(devices::legacy::IrqChip::new())));
     #[cfg(target_os = "macos")]
-    let intc = Some(Arc::new(Mutex::new(devices::legacy::Gic::new())));
+    let intc: Option<Arc<Mutex<IrqChiq>>> =
+        Some(Arc::new(Mutex::new(devices::legacy::IrqChip::new())));
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "amd-sev")))]
     let boot_ip: GuestAddress = GuestAddress(kernel_bundle.guest_addr);
@@ -449,7 +449,12 @@ pub fn build_microvm(
     #[cfg(target_arch = "x86_64")]
     {
         setup_interrupt_controller(&mut vm)?;
-        attach_legacy_devices(&vm, &mut pio_device_manager)?;
+        attach_legacy_devices(
+            &vm,
+            &mut pio_device_manager,
+            &mut mmio_device_manager,
+            intc.clone(),
+        )?;
 
         vcpus = create_vcpus_x86_64(
             &vm,
@@ -782,10 +787,17 @@ pub fn setup_serial_device(
 fn attach_legacy_devices(
     vm: &Vm,
     pio_device_manager: &mut PortIODeviceManager,
+    mmio_device_manager: &mut MMIODeviceManager,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     pio_device_manager
         .register_devices()
         .map_err(Error::LegacyIOBus)
+        .map_err(StartMicrovmError::Internal)?;
+
+    mmio_device_manager
+        .register_mmio_apic(vm.fd(), intc)
+        .map_err(Error::RegisterMMIODevice)
         .map_err(StartMicrovmError::Internal)?;
 
     macro_rules! register_irqfd_evt {
@@ -834,7 +846,7 @@ fn attach_legacy_devices(
     vm: &Vm,
     mmio_device_manager: &mut MMIODeviceManager,
     kernel_cmdline: &mut kernel::cmdline::Cmdline,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     serial: Option<Arc<Mutex<Serial>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     if let Some(serial) = serial {
@@ -923,7 +935,7 @@ fn create_vcpus_aarch64(
     entry_addr: GuestAddress,
     request_ts: TimestampUs,
     exit_evt: &EventFd,
-    intc: Arc<Mutex<Gic>>,
+    intc: Arc<Mutex<IrqChip>>,
 ) -> super::Result<Vec<Vcpu>> {
     let mut vcpus = Vec::with_capacity(vcpu_config.vcpu_count as usize);
     let mut boot_senders = Vec::with_capacity(vcpu_config.vcpu_count as usize - 1);
@@ -992,7 +1004,7 @@ fn attach_fs_devices(
     fs_devs: &FsBuilder,
     event_manager: &mut EventManager,
     shm_region: Option<VirtioShmRegion>,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1026,7 +1038,7 @@ fn attach_fs_devices(
 fn attach_console_devices(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1068,7 +1080,7 @@ fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock>>,
     event_manager: &mut EventManager,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1097,7 +1109,7 @@ fn attach_unixsock_vsock_device(
 fn attach_balloon_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1129,7 +1141,7 @@ fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
     event_manager: &mut EventManager,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1160,7 +1172,7 @@ fn attach_block_devices(
 fn attach_rng_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 

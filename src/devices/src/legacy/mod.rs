@@ -5,18 +5,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+mod apic;
 #[cfg(target_os = "macos")]
 #[allow(non_camel_case_types)]
 mod gic;
 mod i8042;
+mod irqchip;
 #[cfg(target_arch = "aarch64")]
 mod rtc_pl031;
 mod serial;
 
+pub use self::apic::Apic;
 #[cfg(target_os = "macos")]
 pub use self::gic::Gic;
 pub use self::i8042::Error as I8042DeviceError;
 pub use self::i8042::I8042Device;
+pub use self::irqchip::IrqChip;
 #[cfg(target_arch = "aarch64")]
 pub use self::rtc_pl031::RTC;
 pub use self::serial::{ReadableFd, Serial};

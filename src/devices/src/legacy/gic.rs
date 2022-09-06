@@ -322,7 +322,7 @@ impl Gic {
     }
 }
 
-impl BusDevice for Gic {
+impl IrqChipBackend for Gic {
     fn read(&mut self, vcpuid: u64, offset: u64, data: &mut [u8]) {
         if offset >= self.cpu_size {
             let offset = offset - self.cpu_size;

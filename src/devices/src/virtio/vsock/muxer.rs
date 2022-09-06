@@ -3,7 +3,7 @@ use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::super::super::legacy::Gic;
+use super::super::super::legacy::IrqChip;
 use super::super::Queue as VirtQueue;
 use super::super::VIRTIO_MMIO_INT_VRING;
 use super::defs;
@@ -101,7 +101,7 @@ pub struct VsockMuxer {
     epoll: Epoll,
     interrupt_evt: EventFd,
     interrupt_status: Arc<AtomicUsize>,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<IrqChip>>>,
     irq_line: Option<u32>,
     proxy_map: ProxyMap,
     reaper_sender: Option<Sender<u64>>,
@@ -137,7 +137,7 @@ impl VsockMuxer {
         mem: GuestMemoryMmap,
         queue_stream: Arc<Mutex<VirtQueue>>,
         queue_dgram: Arc<Mutex<VirtQueue>>,
-        intc: Option<Arc<Mutex<Gic>>>,
+        intc: Option<Arc<Mutex<IrqChip>>>,
         irq_line: Option<u32>,
     ) {
         self.queue_stream = Some(queue_stream.clone());
