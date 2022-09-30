@@ -21,8 +21,8 @@ pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodu
                                           rootfstype=virtiofs rw quiet no-kvmapf tsi_hijack";
 
 #[cfg(feature = "amd-sev")]
-pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=hvc0 \
-                                          root=/dev/vda rw quiet no-kvmapf tsi_hijack";
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=ttyS0 \
+                                          earlyprintk=ttyS0 root=/dev/vda rw no-kvmapf tsi_hijack swiotlb=65536";
 
 #[cfg(target_os = "macos")]
 pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=-1 panic_print=0 nomodules console=hvc0 \
