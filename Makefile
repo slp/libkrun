@@ -10,6 +10,12 @@ ifeq ($(SEV),1)
     INIT_DEFS := -DSEV=1
 endif
 
+ifeq ($(SNP),1)
+    VARIANT = -snp
+    FEATURE_FLAGS := --features amd-snp
+    INIT_DEFS := -DSEV=1
+endif
+
 OS = $(shell uname -s)
 
 KRUN_BINARY_Linux = libkrun$(VARIANT).so.$(FULL_VERSION)
