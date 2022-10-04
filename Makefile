@@ -11,7 +11,7 @@ ifeq ($(SEV),1)
 endif
 
 ifeq ($(SNP),1)
-    VARIANT = -snp
+    VARIANT = -sev
     FEATURE_FLAGS := --features amd-snp
     INIT_DEFS := -DSEV=1
 endif
@@ -52,6 +52,9 @@ $(LIBRARY_RELEASE_$(OS)): $(INIT_BINARY)
 ifeq ($(SEV),1)
 	mv target/release/libkrun.so target/release/$(KRUN_BASE_$(OS))
 endif
+ifeq ($(SNP), 1)
+	mv target/release/libkrun.so target/release/$(KRUN_BASE_$(OS))
+endif
 ifeq ($(OS),Linux)
 	patchelf --set-soname $(KRUN_SONAME_$(OS)) --output $(LIBRARY_RELEASE_$(OS)) target/release/$(KRUN_BASE_$(OS))
 else
@@ -61,6 +64,9 @@ endif
 $(LIBRARY_DEBUG_$(OS)): $(INIT_BINARY)
 	cargo build $(FEATURE_FLAGS)
 ifeq ($(SEV),1)
+	mv target/debug/libkrun.so target/debug/$(KRUN_BASE_$(OS))
+endif
+ifeq ($(SNP), 1)
 	mv target/debug/libkrun.so target/debug/$(KRUN_BASE_$(OS))
 endif
 ifeq ($(OS),Linux)
