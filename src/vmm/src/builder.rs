@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "macos")]
 use crossbeam_channel::unbounded;
+use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -348,11 +349,19 @@ pub fn build_microvm(
         Some(s) => kernel_cmdline.insert_str(s).unwrap(),
     };
 
-    #[cfg(not(feature = "tee"))]
+    #[cfg(target_os = "linux")]
+    let kvm = KvmContext::new()
+        .map_err(Error::KvmContext)
+        .map_err(StartMicrovmError::Internal)?;
+
+    #[cfg(target_os = "macos")]
     let mut vm = setup_vm(&guest_memory)?;
 
+    #[cfg(all(target_os = "linux", not(feature = "tee")))]
+    let mut vm = setup_vm(&kvm, &guest_memory)?;
+
     #[cfg(feature = "tee")]
-    let mut vm = setup_vm(&guest_memory, vm_resources.tee_config())?;
+    let mut vm = setup_vm(&kvm, &guest_memory, vm_resources.tee_config())?;
 
     #[cfg(feature = "tee")]
     let (launcher, measured_regions) = {
@@ -579,13 +588,15 @@ pub fn build_microvm(
     #[cfg(not(feature = "tee"))]
     let initrd_config = None;
 
+    let cpuid = kvm.fd().get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+
     vmm.configure_system(vcpus.as_slice(), &initrd_config)
         .map_err(StartMicrovmError::Internal)?;
 
     #[cfg(feature = "tee")]
     {
         vmm.kvm_vm()
-            .secure_virt_attest(vmm.guest_memory(), measured_regions, launcher)
+            .secure_virt_attest(cpuid, vmm.guest_memory(), measured_regions, launcher)
             .map_err(StartMicrovmError::SecureVirtAttest)?;
 
         println!("Starting TEE/microVM.");
@@ -703,11 +714,9 @@ fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
 
 #[cfg(all(target_os = "linux", not(feature = "tee")))]
 pub(crate) fn setup_vm(
+    kvm: &KvmContext,
     guest_memory: &GuestMemoryMmap,
 ) -> std::result::Result<Vm, StartMicrovmError> {
-    let kvm = KvmContext::new()
-        .map_err(Error::KvmContext)
-        .map_err(StartMicrovmError::Internal)?;
     let mut vm = Vm::new(kvm.fd())
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
@@ -718,12 +727,10 @@ pub(crate) fn setup_vm(
 }
 #[cfg(all(target_os = "linux", feature = "tee"))]
 pub(crate) fn setup_vm(
+    kvm: &KvmContext,
     guest_memory: &GuestMemoryMmap,
     tee_config: &Option<TeeConfig>,
 ) -> std::result::Result<Vm, StartMicrovmError> {
-    let kvm = KvmContext::new()
-        .map_err(Error::KvmContext)
-        .map_err(StartMicrovmError::Internal)?;
     let mut vm = Vm::new(kvm.fd(), tee_config)
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;

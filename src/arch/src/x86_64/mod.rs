@@ -244,6 +244,7 @@ pub fn configure_system(
     #[cfg(feature = "tee")]
     {
         params.0.hdr.syssize = num_cpus as u32;
+        params.0.hdr.ram_size = (arch_memory_info.ram_last_addr / 1024 / 1024) as u16;
     }
 
     add_e820_entry(&mut params.0, 0, EBDA_START, E820_RAM)?;

@@ -602,6 +602,7 @@ impl Vm {
     #[cfg(feature = "amd-sev")]
     pub fn secure_virt_attest(
         &self,
+        _cpuid: CpuId,
         guest_mem: &GuestMemoryMmap,
         measured_regions: Vec<MeasuredRegion>,
         launcher: Launcher<Started, RawFd, RawFd>,
@@ -624,12 +625,13 @@ impl Vm {
     #[cfg(feature = "amd-snp")]
     pub fn secure_virt_attest(
         &self,
+        cpuid: CpuId,
         guest_mem: &GuestMemoryMmap,
         measured_regions: Vec<MeasuredRegion>,
         launcher: Launcher<Started, RawFd, RawFd>,
     ) -> Result<()> {
         self.snp
-            .vm_measure(guest_mem, measured_regions, launcher)
+            .vm_measure(cpuid, guest_mem, measured_regions, launcher)
             .map_err(Error::SecVirtAttest)
     }
 
