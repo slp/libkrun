@@ -26,7 +26,7 @@ use super::{
     Error, CONFIG_SPACE_SIZE, QUEUE_SIZES, SECTOR_SHIFT, SECTOR_SIZE,
 };
 
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 use crate::virtio::VIRTIO_MMIO_INT_CONFIG;
 use crate::Error as DeviceError;
 
@@ -183,7 +183,7 @@ pub struct Block {
     pub(crate) root_device: bool,
 
     // Interrupt specific fields.
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<dyn IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -319,14 +319,20 @@ impl Block {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+            if intc.lock().unwrap().set_irq(self.irq_line.unwrap()) {
+                self.interrupt_evt.write(1).map_err(|e| {
+                    error!("Failed to signal used queue: {:?}", e);
+                    DeviceError::FailedSignalingUsedQueue(e)
+                })
+            } else {
+                Ok(())
+            }
         } else {
             self.interrupt_evt.write(1).map_err(|e| {
                 error!("Failed to signal used queue: {:?}", e);
                 DeviceError::FailedSignalingUsedQueue(e)
-            })?;
+            })
         }
-        Ok(())
     }
 
     /// Update the backing file and the config space of the block device.
@@ -340,7 +346,12 @@ impl Block {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_CONFIG as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+            if intc.lock().unwrap().set_irq(self.irq_line.unwrap()) {
+                self.interrupt_evt.write(1).map_err(|e| {
+                    error!("Failed to signal used queue: {:?}", e);
+                    DeviceError::FailedSignalingUsedQueue(e)
+                })
+            }
         } else {
             self.interrupt_evt.write(1).unwrap();
         }
@@ -348,7 +359,7 @@ impl Block {
         Ok(())
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<dyn IrqChip>>) {
         self.intc = Some(intc);
     }
 

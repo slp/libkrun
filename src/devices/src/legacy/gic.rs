@@ -10,6 +10,7 @@ use arch::aarch64::gicv2::GICv2;
 use arch::aarch64::layout::GTIMER_VIRT;
 use hvf::{vcpu_request_exit, vcpu_set_vtimer_mask};
 
+use super::irqchip::IrqChip;
 use crate::bus::BusDevice;
 
 const IRQ_NUM: u32 = 64;
@@ -97,18 +98,6 @@ impl Gic {
     pub fn set_vtimer_irq(&mut self, vcpuid: u64) {
         assert!(vcpuid < MAX_CPUS);
         self.set_irq_common(vcpuid as u8, self.vtimer_irq);
-    }
-
-    pub fn set_irq(&mut self, irq_line: u32) {
-        for vcpuid in 0..self.vcpu_count {
-            if (self.irq_target[irq_line as usize] & (1 << vcpuid)) == 0 {
-                continue;
-            }
-
-            debug!("signaling irq={} to vcpuid={}", irq_line, vcpuid);
-
-            self.set_irq_common(vcpuid as u8, irq_line);
-        }
     }
 
     pub fn register_vcpu(&mut self, vcpuid: u64, wfe_sender: Sender<u32>) {
@@ -319,6 +308,22 @@ impl Gic {
                 vcpu_set_vtimer_mask(vcpuid, false).unwrap();
             }
         }
+    }
+}
+
+impl IrqChip for Gic {
+    fn set_irq(&mut self, irq_line: u32) -> bool {
+        for vcpuid in 0..self.vcpu_count {
+            if (self.irq_target[irq_line as usize] & (1 << vcpuid)) == 0 {
+                continue;
+            }
+
+            debug!("signaling irq={} to vcpuid={}", irq_line, vcpuid);
+
+            self.set_irq_common(vcpuid as u8, irq_line);
+        }
+
+        false
     }
 }
 

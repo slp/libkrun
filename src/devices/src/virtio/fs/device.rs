@@ -16,7 +16,7 @@ use super::descriptor_utils::{Reader, Writer};
 use super::passthrough::{self, PassthroughFs};
 use super::server::Server;
 use super::{defs, defs::uapi};
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 use crate::Error as DeviceError;
 
 // High priority queue.
@@ -56,7 +56,7 @@ pub struct Fs {
     config: VirtioFsConfig,
     shm_region: Option<VirtioShmRegion>,
     server: Server<PassthroughFs>,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<dyn IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -117,7 +117,7 @@ impl Fs {
         defs::FS_DEV_ID
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<dyn IrqChip>>) {
         self.intc = Some(intc);
     }
 
@@ -132,8 +132,14 @@ impl Fs {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-            Ok(())
+            if intc.lock().unwrap().set_irq(self.irq_line.unwrap()) {
+                self.interrupt_evt.write(1).map_err(|e| {
+                    error!("Failed to signal used queue: {:?}", e);
+                    DeviceError::FailedSignalingUsedQueue(e)
+                })
+            } else {
+                Ok(())
+            }
         } else {
             self.interrupt_evt.write(1).map_err(|e| {
                 error!("Failed to signal used queue: {:?}", e);

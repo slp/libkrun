@@ -18,7 +18,7 @@ use super::super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
 };
 use super::{defs, defs::uapi};
-use crate::legacy::Gic;
+use crate::legacy::IrqChip;
 use crate::Error as DeviceError;
 
 pub(crate) const RXQ_INDEX: usize = 0;
@@ -88,7 +88,7 @@ pub struct Console {
     output: Box<dyn io::Write + Send>,
     configured: bool,
     pub(crate) interactive: bool,
-    intc: Option<Arc<Mutex<Gic>>>,
+    intc: Option<Arc<Mutex<dyn IrqChip>>>,
     irq_line: Option<u32>,
 }
 
@@ -146,7 +146,7 @@ impl Console {
         defs::CONSOLE_DEV_ID
     }
 
-    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+    pub fn set_intc(&mut self, intc: Arc<Mutex<dyn IrqChip>>) {
         self.intc = Some(intc);
     }
 
@@ -160,13 +160,16 @@ impl Console {
 
     /// Signal the guest driver that we've used some virtio buffers that it had previously made
     /// available.
-    pub fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
-        debug!("console: raising IRQ");
-        self.interrupt_status
-            .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
+    pub fn signal_queue(&self) -> result::Result<(), DeviceError> {
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-            Ok(())
+            if intc.lock().unwrap().set_irq(self.irq_line.unwrap()) {
+                self.interrupt_evt.write(1).map_err(|e| {
+                    error!("Failed to signal used queue: {:?}", e);
+                    DeviceError::FailedSignalingUsedQueue(e)
+                })
+            } else {
+                Ok(())
+            }
         } else {
             self.interrupt_evt.write(1).map_err(|e| {
                 error!("Failed to signal used queue: {:?}", e);
@@ -175,14 +178,18 @@ impl Console {
         }
     }
 
+    pub fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
+        debug!("console: raising IRQ for data");
+        self.interrupt_status
+            .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
+        self.signal_queue()
+    }
+
     pub fn signal_config_update(&self) -> result::Result<(), DeviceError> {
         debug!("console: raising IRQ for config update");
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_CONFIG as usize, Ordering::SeqCst);
-        self.interrupt_evt.write(1).map_err(|e| {
-            error!("Failed to signal used queue: {:?}", e);
-            DeviceError::FailedSignalingUsedQueue(e)
-        })
+        self.signal_queue()
     }
 
     pub fn update_console_size(&mut self, cols: u16, rows: u16) {
