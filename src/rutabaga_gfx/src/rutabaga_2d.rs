@@ -15,6 +15,7 @@ use crate::rutabaga_core::RutabagaResource;
 use crate::rutabaga_utils::*;
 
 /// Transfers a resource from potentially many chunked src slices to a dst slice.
+#[allow(clippy::too_many_arguments)]
 fn transfer_2d(
     resource_w: u32,
     resource_h: u32,

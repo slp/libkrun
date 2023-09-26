@@ -19,6 +19,7 @@ pub use memory_mapping::MemoryMapping;
 pub use sys::platform::descriptor::RawDescriptor;
 pub use sys::platform::shm::round_up_to_page_size;
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe trait MappedRegion: Send + Sync {
     /// Returns a pointer to the beginning of the memory region. Should only be
     /// used for passing this region to ioctls for setting guest memory.
