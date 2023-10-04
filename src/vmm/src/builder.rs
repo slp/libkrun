@@ -596,6 +596,7 @@ pub fn build_microvm(
     attach_console_devices(&mut vmm, event_manager, intc.clone())?;
     #[cfg(feature = "gpu")]
     attach_gpu_device(&mut vmm, event_manager, _shm_region, intc.clone())?;
+    attach_snd_device(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_fs_devices(
         &mut vmm,
@@ -1309,6 +1310,33 @@ fn attach_gpu_device(
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(vmm, id, MmioTransport::new(vmm.guest_memory().clone(), gpu))
+        .map_err(RegisterGpuDevice)?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "tee"))]
+fn attach_snd_device(
+    vmm: &mut Vmm,
+    event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let snd = Arc::new(Mutex::new(devices::virtio::Snd::new().unwrap()));
+
+    event_manager
+        .add_subscriber(snd.clone())
+        .map_err(RegisterEvent)?;
+
+    let id = String::from(snd.lock().unwrap().id());
+
+    if let Some(intc) = intc {
+        snd.lock().unwrap().set_intc(intc);
+    }
+
+    // The device mutex mustn't be locked here otherwise it will deadlock.
+    attach_mmio_device(vmm, id, MmioTransport::new(vmm.guest_memory().clone(), snd))
         .map_err(RegisterGpuDevice)?;
 
     Ok(())

@@ -34,6 +34,7 @@ pub mod net;
 mod queue;
 #[cfg(not(feature = "tee"))]
 pub mod rng;
+pub mod snd;
 pub mod vsock;
 
 #[cfg(not(feature = "tee"))]
@@ -52,6 +53,7 @@ pub use self::net::*;
 pub use self::queue::*;
 #[cfg(not(feature = "tee"))]
 pub use self::rng::*;
+pub use self::snd::Snd;
 pub use self::vsock::*;
 
 /// When the driver initializes the device, it lets the device know about the
