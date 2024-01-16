@@ -367,12 +367,12 @@ pub struct VirglRendererFlags(u32);
 impl Default for VirglRendererFlags {
     fn default() -> VirglRendererFlags {
         VirglRendererFlags::new()
-            .use_virgl(true)
-            .use_venus(false)
-            .use_egl(true)
+            .use_virgl(false)
+            .use_venus(true)
+            .use_egl(false)
             .use_surfaceless(true)
-            .use_gles(true)
-            .use_render_server(false)
+            .use_gles(false)
+            .use_render_server(true)
     }
 }
 
@@ -632,21 +632,27 @@ pub const RUTABAGA_FENCE_HANDLE_TYPE_ZIRCON: u32 = 0x0009;
 
 /// Handle to OS-specific memory or synchronization objects.
 pub struct RutabagaHandle {
-    pub os_handle: SafeDescriptor,
+    pub os_handle: Option<SafeDescriptor>,
     pub handle_type: u32,
 }
 
 impl RutabagaHandle {
     /// Clones an existing rutabaga handle, by using OS specific mechanisms.
     pub fn try_clone(&self) -> RutabagaResult<RutabagaHandle> {
-        let clone = self
-            .os_handle
-            .try_clone()
-            .map_err(|_| RutabagaError::InvalidRutabagaHandle)?;
-        Ok(RutabagaHandle {
-            os_handle: clone,
-            handle_type: self.handle_type,
-        })
+        if let Some(os_handle) = self.os_handle.as_ref() {
+            let clone = os_handle
+                .try_clone()
+                .map_err(|_| RutabagaError::InvalidRutabagaHandle)?;
+            Ok(RutabagaHandle {
+                os_handle: Some(clone),
+                handle_type: self.handle_type,
+            })
+        } else {
+            Ok(RutabagaHandle {
+                os_handle: None,
+                handle_type: self.handle_type,
+            })
+        }
     }
 }
 

@@ -40,6 +40,8 @@ use std::sync::Mutex;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
+use crossbeam_channel::Sender;
+
 #[cfg(target_arch = "x86_64")]
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
@@ -362,6 +364,21 @@ impl Vmm {
     /// Returns a reference to the inner KVM Vm object.
     pub fn kvm_vm(&self) -> &Vm {
         &self.vm
+    }
+
+    pub fn add_mapping(
+        &self,
+        reply_sender: Sender<bool>,
+        host_addr: u64,
+        guest_addr: u64,
+        len: u64,
+    ) {
+        self.vm
+            .add_mapping(reply_sender, host_addr, guest_addr, len);
+    }
+
+    pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
+        self.vm.remove_mapping(reply_sender, guest_addr, len);
     }
 }
 

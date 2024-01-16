@@ -43,6 +43,7 @@ pub struct RutabagaResource {
     pub blob_mem: u32,
     pub blob_flags: u32,
     pub map_info: Option<u32>,
+    pub map_ptr: Option<u64>,
     pub info_2d: Option<Rutabaga2DInfo>,
     pub info_3d: Option<Resource3DInfo>,
     pub vulkan_info: Option<VulkanInfo>,
@@ -107,6 +108,7 @@ pub trait RutabagaComponent {
             blob_mem: 0,
             blob_flags: 0,
             map_info: None,
+            map_ptr: None,
             info_2d: None,
             info_3d: None,
             vulkan_info: None,
@@ -440,6 +442,7 @@ impl Rutabaga {
                     blob_mem: 0,
                     blob_flags: 0,
                     map_info: None,
+                    map_ptr: None,
                     info_2d: Some(Rutabaga2DInfo {
                         width: s.width,
                         height: s.height,
@@ -768,7 +771,7 @@ impl Rutabaga {
 
                     // Creating the mapping closes the cloned descriptor.
                     let mapping = MemoryMapping::from_safe_descriptor(
-                        clone.os_handle,
+                        clone.os_handle.unwrap(),
                         resource_size,
                         map_info,
                     )?;
@@ -822,6 +825,19 @@ impl Rutabaga {
         resource
             .map_info
             .ok_or(RutabagaError::SpecViolation("no map info available"))
+    }
+
+    /// Returns the `map_info` of the blob resource. The valid values for `map_info`
+    /// are defined in the virtio-gpu spec.
+    pub fn map_ptr(&self, resource_id: u32) -> RutabagaResult<u64> {
+        let resource = self
+            .resources
+            .get(&resource_id)
+            .ok_or(RutabagaError::InvalidResourceId)?;
+
+        resource
+            .map_ptr
+            .ok_or(RutabagaError::SpecViolation("no map ptr available"))
     }
 
     /// Returns the `vulkan_info` of the blob resource, which consists of the physical device
@@ -993,8 +1009,11 @@ impl RutabagaBuilder {
     /// Create new a RutabagaBuilder.
     pub fn new(default_component: RutabagaComponentType, capset_mask: u64) -> RutabagaBuilder {
         let virglrenderer_flags = VirglRendererFlags::new()
-            .use_thread_sync(true)
-            .use_async_fence_cb(true);
+            .use_virgl(false)
+            .use_venus(true)
+            .use_render_server(true);
+        //.use_thread_sync(true)
+        //.use_async_fence_cb(true);
         let gfxstream_flags = GfxstreamFlags::new();
         RutabagaBuilder {
             display_width: RUTABAGA_DEFAULT_WIDTH,

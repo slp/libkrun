@@ -122,7 +122,7 @@ impl Console {
 
         if let Err(e) = self.sigwinch_evt.read() {
             error!("Failed to read the sigwinch event: {:?}", e);
-        }
+       }
 
         let (cols, rows) = get_win_size();
         self.update_console_size(cols, rows);

@@ -16,6 +16,7 @@ use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::os::raw::c_void;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::prelude::RawFd;
 use std::panic::catch_unwind;
 use std::process::abort;
 use std::ptr::null_mut;
@@ -54,11 +55,18 @@ fn import_resource(resource: &mut RutabagaResource) -> RutabagaResult<()> {
 
     if let Some(handle) = &resource.handle {
         if handle.handle_type == RUTABAGA_MEM_HANDLE_TYPE_DMABUF {
-            let dmabuf_fd = handle.os_handle.try_clone()?.into_raw_descriptor();
+            let dmabuf_fd: i32 = handle
+                .os_handle
+                .as_ref()
+                .unwrap()
+                .try_clone()?
+                .into_raw_descriptor()
+                .try_into()
+                .unwrap();
             // Safe because we are being passed a valid fd
             unsafe {
-                let dmabuf_size = libc::lseek64(dmabuf_fd, 0, libc::SEEK_END);
-                libc::lseek64(dmabuf_fd, 0, libc::SEEK_SET);
+                let dmabuf_size = libc::lseek(dmabuf_fd, 0, libc::SEEK_END);
+                libc::lseek(dmabuf_fd, 0, libc::SEEK_SET);
                 let args = virgl_renderer_resource_import_blob_args {
                     res_handle: resource.resource_id,
                     blob_mem: resource.blob_mem,
@@ -245,6 +253,8 @@ unsafe extern "C" fn get_server_fd(cookie: *mut c_void, version: u32) -> c_int {
             .take()
             .map(SafeDescriptor::into_raw_descriptor)
             .unwrap_or(-1)
+            .try_into()
+            .unwrap()
     })
     .unwrap_or_else(|_| abort())
 }
@@ -355,6 +365,23 @@ impl VirglRenderer {
         Err(RutabagaError::Unsupported)
     }
 
+    #[allow(unused_variables)]
+    fn map_ptr(&self, resource_id: u32) -> RutabagaResult<u64> {
+        #[cfg(feature = "virgl_renderer_next")]
+        {
+            let mut map_ptr = 0;
+            println!("XXX - map_ptr entry");
+            let ret = unsafe { virgl_renderer_resource_get_map_ptr(resource_id, &mut map_ptr) };
+            ret_to_res(ret)?;
+
+            println!("XXX - map_ptr={}", map_ptr);
+
+            Ok(map_ptr)
+        }
+        #[cfg(not(feature = "virgl_renderer_next"))]
+        Err(RutabagaError::Unsupported)
+    }
+
     fn query(&self, resource_id: u32) -> RutabagaResult<Resource3DInfo> {
         let query = export_query(resource_id)?;
         if query.out_num_fds == 0 {
@@ -377,19 +404,25 @@ impl VirglRenderer {
         #[cfg(feature = "virgl_renderer_next")]
         {
             let mut fd_type = 0;
-            let mut fd = 0;
+            let mut fd = -1;
             let ret =
                 unsafe { virgl_renderer_resource_export_blob(resource_id, &mut fd_type, &mut fd) };
             ret_to_res(ret)?;
 
             // Safe because the FD was just returned by a successful virglrenderer
             // call so it must be valid and owned by us.
-            let handle = unsafe { SafeDescriptor::from_raw_descriptor(fd) };
+            //let handle = unsafe { SafeDescriptor::from_raw_descriptor(fd.into()) };
 
-            let handle_type = match fd_type {
-                VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF => RUTABAGA_MEM_HANDLE_TYPE_DMABUF,
-                VIRGL_RENDERER_BLOB_FD_TYPE_SHM => RUTABAGA_MEM_HANDLE_TYPE_SHM,
-                VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE => RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+            let (handle, handle_type) = match fd_type {
+                VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF => (
+                    Some(unsafe { SafeDescriptor::from_raw_descriptor(fd.into()) }),
+                    RUTABAGA_MEM_HANDLE_TYPE_DMABUF,
+                ),
+                VIRGL_RENDERER_BLOB_FD_TYPE_SHM => (
+                    Some(unsafe { SafeDescriptor::from_raw_descriptor(fd.into()) }),
+                    RUTABAGA_MEM_HANDLE_TYPE_SHM,
+                ),
+                VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE => (None, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD),
                 _ => {
                     return Err(RutabagaError::Unsupported);
                 }
@@ -456,7 +489,7 @@ impl RutabagaComponent for VirglRenderer {
 
     fn poll_descriptor(&self) -> Option<SafeDescriptor> {
         // Safe because it can be called anytime and returns -1 in the event of an error.
-        let fd = unsafe { virgl_renderer_get_poll_fd() };
+        let fd: RawFd = unsafe { virgl_renderer_get_poll_fd() };
         if fd >= 0 {
             if let Ok(dup_fd) = SafeDescriptor::try_from(&fd as &dyn AsRawFd) {
                 return Some(dup_fd);
@@ -496,6 +529,7 @@ impl RutabagaComponent for VirglRenderer {
             blob_mem: 0,
             blob_flags: 0,
             map_info: None,
+            map_ptr: None,
             info_2d: None,
             info_3d: self.query(resource_id).ok(),
             vulkan_info: None,
@@ -666,6 +700,7 @@ impl RutabagaComponent for VirglRenderer {
                 blob_mem: resource_create_blob.blob_mem,
                 blob_flags: resource_create_blob.blob_flags,
                 map_info: self.map_info(resource_id).ok(),
+                map_ptr: self.map_ptr(resource_id).ok(),
                 info_2d: None,
                 info_3d: self.query(resource_id).ok(),
                 vulkan_info: None,
@@ -721,9 +756,9 @@ impl RutabagaComponent for VirglRenderer {
 
             // Safe because the FD was just returned by a successful virglrenderer call so it must
             // be valid and owned by us.
-            let fence = unsafe { SafeDescriptor::from_raw_descriptor(fd) };
+            let fence = unsafe { SafeDescriptor::from_raw_descriptor(fd.into()) };
             Ok(RutabagaHandle {
-                os_handle: fence,
+                os_handle: Some(fence),
                 handle_type: RUTABAGA_FENCE_HANDLE_TYPE_SYNC_FD,
             })
         }

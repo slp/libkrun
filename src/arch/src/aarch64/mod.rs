@@ -36,14 +36,14 @@ pub enum Error {
 /// The start of the memory area reserved for MMIO devices.
 pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
 /// The size of the MMIO shared memory area used by virtio-fs DAX.
-pub const MMIO_SHM_SIZE: u64 = 1 << 29;
+pub const MMIO_SHM_SIZE: u64 = 1 << 33;
 
 pub use self::fdt::DeviceInfoForFDT;
 use crate::DeviceType;
 
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
-#[cfg(target_os = "linux")]
+//#[cfg(target_os = "linux")]
 pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
     let dram_size = min(size as u64, layout::DRAM_MEM_MAX_SIZE) as usize;
     let ram_last_addr = layout::DRAM_MEM_START + (dram_size as u64);
@@ -61,6 +61,7 @@ pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, u
         ],
     )
 }
+/*
 #[cfg(target_os = "macos")]
 pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
     let dram_size = min(size as u64, layout::DRAM_MEM_MAX_SIZE) as usize;
@@ -74,6 +75,7 @@ pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, u
         vec![(GuestAddress(layout::DRAM_MEM_START), dram_size)],
     )
 }
+*/
 
 /// Configures the system and should be called once per vm before starting vcpu threads.
 /// For aarch64, we only setup the FDT.

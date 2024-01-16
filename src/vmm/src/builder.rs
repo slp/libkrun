@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "macos")]
 use crossbeam_channel::unbounded;
+use crossbeam_channel::Sender;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -17,6 +18,7 @@ use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use devices::legacy::Gic;
 use devices::legacy::Serial;
+use devices::virtio::gpu::MemoryMapping;
 #[cfg(feature = "net")]
 use devices::virtio::Net;
 #[cfg(not(feature = "tee"))]
@@ -56,7 +58,7 @@ use utils::time::TimestampUs;
 use vm_memory::mmap::GuestRegionMmap;
 #[cfg(any(target_arch = "aarch64", feature = "tee"))]
 use vm_memory::Bytes;
-#[cfg(target_os = "linux")]
+//#[cfg(target_os = "linux")]
 use vm_memory::GuestMemory;
 use vm_memory::{mmap::MmapRegion, GuestAddress, GuestMemoryMmap};
 
@@ -326,6 +328,7 @@ impl VmmEventsObserver for SerialStdin {
 /// is returned.
 pub fn build_microvm(
     vm_resources: &super::resources::VmResources,
+    sender: Sender<MemoryMapping>,
     event_manager: &mut EventManager,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     // Timestamp for measuring microVM boot duration.
@@ -565,7 +568,7 @@ pub fn build_microvm(
         )?;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "tee")))]
+    //#[cfg(all(target_os = "linux", not(feature = "tee")))]
     let _shm_region = Some(VirtioShmRegion {
         host_addr: guest_memory
             .get_host_address(GuestAddress(arch_memory_info.shm_start_addr))
@@ -573,8 +576,8 @@ pub fn build_microvm(
         guest_addr: arch_memory_info.shm_start_addr,
         size: arch_memory_info.shm_size as usize,
     });
-    #[cfg(target_os = "macos")]
-    let shm_region = None;
+    //#[cfg(target_os = "macos")]
+    //let shm_region = None;
 
     let mut vmm = Vmm {
         //events_observer: Some(Box::new(SerialStdin::get())),
@@ -595,7 +598,7 @@ pub fn build_microvm(
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
     attach_console_devices(&mut vmm, event_manager, intc.clone())?;
     #[cfg(feature = "gpu")]
-    attach_gpu_device(&mut vmm, event_manager, _shm_region, intc.clone())?;
+    attach_gpu_device(&mut vmm, event_manager, sender, _shm_region, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_fs_devices(
         &mut vmm,
@@ -663,6 +666,8 @@ pub fn build_microvm(
 
         println!("Starting TEE/microVM.");
     }
+
+    println!("Starting VMM");
 
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
@@ -1286,12 +1291,13 @@ fn attach_rng_device(
 fn attach_gpu_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
+    sender: Sender<MemoryMapping>,
     shm_region: Option<VirtioShmRegion>,
     intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    let gpu = Arc::new(Mutex::new(devices::virtio::Gpu::new().unwrap()));
+    let gpu = Arc::new(Mutex::new(devices::virtio::Gpu::new(sender).unwrap()));
 
     event_manager
         .add_subscriber(gpu.clone())

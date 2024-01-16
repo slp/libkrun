@@ -12,7 +12,7 @@ fn main() -> Result<(), pkg_config::Error> {
     }
 
     pkg_config::Config::new().probe("epoxy")?;
-    pkg_config::Config::new().probe("libdrm")?;
+    //pkg_config::Config::new().probe("libdrm")?;
     pkg_config::Config::new().probe("virglrenderer")?;
 
     Ok(())
