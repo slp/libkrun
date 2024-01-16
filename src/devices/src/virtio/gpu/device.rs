@@ -15,6 +15,7 @@ use super::defs;
 use super::defs::uapi;
 use super::defs::uapi::virtio_gpu_config;
 use super::worker::Worker;
+use super::MemoryMapping;
 use crate::legacy::Gic;
 use crate::Error as DeviceError;
 
@@ -26,6 +27,7 @@ pub(crate) const CUR_INDEX: usize = 1;
 // Supported features.
 pub(crate) const AVAIL_FEATURES: u64 = 1u64 << uapi::VIRTIO_F_VERSION_1
     | 1u64 << uapi::VIRTIO_GPU_F_VIRGL
+    | 1u64 << uapi::VIRTIO_GPU_F_RESOURCE_UUID
     | 1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB
     | 1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT;
 
@@ -44,10 +46,14 @@ pub struct Gpu {
     intc: Option<Arc<Mutex<Gic>>>,
     irq_line: Option<u32>,
     pub(crate) sender: Option<Sender<u64>>,
+    map_sender: Sender<MemoryMapping>,
 }
 
 impl Gpu {
-    pub(crate) fn with_queues(queues: Vec<VirtQueue>) -> super::Result<Gpu> {
+    pub(crate) fn with_queues(
+        map_sender: Sender<MemoryMapping>,
+        queues: Vec<VirtQueue>,
+    ) -> super::Result<Gpu> {
         let mut queue_events = Vec::new();
         for _ in 0..queues.len() {
             queue_events
@@ -72,15 +78,16 @@ impl Gpu {
             intc: None,
             irq_line: None,
             sender: None,
+            map_sender,
         })
     }
 
-    pub fn new() -> super::Result<Gpu> {
+    pub fn new(map_sender: Sender<MemoryMapping>) -> super::Result<Gpu> {
         let queues: Vec<VirtQueue> = defs::QUEUE_SIZES
             .iter()
             .map(|&max_size| VirtQueue::new(max_size))
             .collect();
-        Self::with_queues(queues)
+        Self::with_queues(map_sender, queues)
     }
 
     pub fn id(&self) -> &str {
@@ -265,6 +272,7 @@ impl VirtioDevice for Gpu {
             self.intc.clone(),
             self.irq_line,
             shm_region,
+            self.map_sender.clone(),
         );
         worker.run();
 

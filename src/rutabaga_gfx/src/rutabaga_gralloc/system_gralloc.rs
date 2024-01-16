@@ -47,7 +47,7 @@ impl Gralloc for SystemGralloc {
     fn allocate_memory(&mut self, reqs: ImageMemoryRequirements) -> RutabagaResult<RutabagaHandle> {
         let shm = SharedMemory::new("rutabaga_gralloc", reqs.size)?;
         Ok(RutabagaHandle {
-            os_handle: shm.into(),
+            os_handle: Some(shm.into()),
             handle_type: RUTABAGA_MEM_HANDLE_TYPE_SHM,
         })
     }

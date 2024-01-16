@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::os::fd::AsRawFd;
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crossbeam_channel::{unbounded, Sender};
 use libc::c_void;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
@@ -21,6 +22,7 @@ use super::protocol::{
     GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
     VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
+use super::MemoryMapping;
 use super::{GpuError, Result};
 use crate::legacy::Gic;
 use crate::virtio::gpu::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
@@ -89,6 +91,7 @@ pub struct VirtioGpu {
     rutabaga: Rutabaga,
     resources: BTreeMap<u32, VirtioGpuResource>,
     fence_state: Arc<Mutex<FenceState>>,
+    map_sender: Sender<MemoryMapping>,
 }
 
 impl VirtioGpu {
@@ -156,6 +159,7 @@ impl VirtioGpu {
         interrupt_evt: EventFd,
         intc: Option<Arc<Mutex<Gic>>>,
         irq_line: Option<u32>,
+        map_sender: Sender<MemoryMapping>,
     ) -> Self {
         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
             Ok(dir) => dir,
@@ -173,13 +177,13 @@ impl VirtioGpu {
         }];
         let rutabaga_channels_opt = Some(rutabaga_channels);
 
-        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
-            .set_rutabaga_channels(rutabaga_channels_opt)
-            .set_use_egl(true)
-            .set_use_gles(true)
-            .set_use_glx(true)
-            .set_use_surfaceless(true)
-            .set_use_drm(true);
+        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0);
+        //.set_rutabaga_channels(rutabaga_channels_opt)
+        //.set_use_egl(true)
+        //.set_use_gles(true)
+        //.set_use_glx(true)
+        //.set_use_surfaceless(true);
+        //.set_use_drm(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(
@@ -199,6 +203,7 @@ impl VirtioGpu {
             rutabaga,
             resources: Default::default(),
             fence_state,
+            map_sender,
         }
     }
 
@@ -448,15 +453,20 @@ impl VirtioGpu {
                 Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
         }
 
-        self.rutabaga.resource_create_blob(
-            ctx_id,
-            resource_id,
-            resource_create_blob,
-            rutabaga_iovecs,
-            None,
-        )?;
+        let mut rcb: ResourceCreateBlob = resource_create_blob;
+        let size = resource_create_blob.size;
+        let rounded_size = ((size + (16384 - 1)) / 16384) * 16384;
+        if rounded_size != size {
+            println!(
+                "XXX - rounding up {} to {}",
+                resource_create_blob.size, rounded_size
+            );
+            rcb.size = rounded_size;
+        }
+        self.rutabaga
+            .resource_create_blob(ctx_id, resource_id, rcb, rutabaga_iovecs, None)?;
 
-        let resource = VirtioGpuResource::new(resource_id, 0, 0, resource_create_blob.size);
+        let resource = VirtioGpuResource::new(resource_id, 0, 0, rcb.size);
 
         // Rely on rutabaga to check for duplicate resource ids.
         self.resources.insert(resource_id, resource);
@@ -481,9 +491,12 @@ impl VirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+        let map_ptr = self.rutabaga.map_ptr(resource_id).map_err(|_| ErrUnspec)?;
 
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            println!("OK export");
             if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
+                println!("!TYPE_OPAQUE_FD");
                 let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
                     RUTABAGA_MAP_ACCESS_READ => libc::PROT_READ,
                     RUTABAGA_MAP_ACCESS_WRITE => libc::PROT_WRITE,
@@ -494,28 +507,79 @@ impl VirtioGpu {
                 if offset + resource.size > shm_region.size as u64 {
                     error!("mapping DOES NOT FIT");
                 }
-                let addr = shm_region.host_addr + offset;
-                debug!(
-                    "mapping: host_addr={:x}, addr={:x}, size={}",
-                    shm_region.host_addr, addr, resource.size
+                let host_addr = shm_region.host_addr + offset;
+                let guest_addr = shm_region.guest_addr + offset;
+                println!(
+                    "mapping: host_addr={:x}, guest_addr={:x}, size={}",
+                    host_addr, guest_addr, resource.size
                 );
+                //let test = (addr + 0x69) as *mut i32;
+                //unsafe {
+                //    println!("XXX - PRE mapping value = {}", *test);
+                //}
                 let ret = unsafe {
                     libc::mmap(
-                        addr as *mut libc::c_void,
+                        host_addr as *mut libc::c_void,
                         resource.size as usize,
                         prot,
                         libc::MAP_SHARED | libc::MAP_FIXED,
-                        export.os_handle.as_raw_fd(),
+                        export.os_handle.unwrap().as_raw_fd(),
                         0 as libc::off_t,
                     )
                 };
                 if ret == libc::MAP_FAILED {
+                    println!("MAP_FAILED");
                     return Err(ErrUnspec);
                 }
+                //let test = (addr + 0x69) as *mut i32;
+                //unsafe {
+                //    println!("XXX - POST mapping value = {}", *test);
+                //    *test = 66;
+                //}
+
+                let (reply_sender, reply_receiver) = unbounded();
+                self.map_sender.send(MemoryMapping::AddMapping(
+                    reply_sender,
+                    host_addr,
+                    guest_addr,
+                    resource.size,
+                ));
+                let success = reply_receiver.recv().unwrap();
+                if !success {
+                    println!("HVF MAP FAILED");
+                    return Err(ErrUnspec);
+                } else {
+                    println!("HVF MAP SUCCESS");
+                }
             } else {
-                return Err(ErrUnspec);
+                println!("TYPE_OPAQUE_FD");
+                if offset + resource.size > shm_region.size as u64 {
+                    error!("mapping DOES NOT FIT");
+                }
+
+                let guest_addr = shm_region.guest_addr + offset;
+
+                println!(
+                    "mapping: map_ptr={:x}, guest_addr={:x}, size={}",
+                    map_ptr, guest_addr, resource.size
+                );
+                let (reply_sender, reply_receiver) = unbounded();
+                self.map_sender.send(MemoryMapping::AddMapping(
+                    reply_sender,
+                    map_ptr,
+                    guest_addr,
+                    resource.size,
+                ));
+                let success = reply_receiver.recv().unwrap();
+                if !success {
+                    println!("HVF MAP FAILED");
+                    return Err(ErrUnspec);
+                } else {
+                    println!("HVF MAP SUCCESS");
+                }
             }
         } else {
+            println!("Error in export");
             return Err(ErrUnspec);
         }
 
@@ -539,8 +603,25 @@ impl VirtioGpu {
 
         let shmem_offset = resource.shmem_offset.ok_or(ErrUnspec)?;
 
-        let addr = shm_region.host_addr + shmem_offset;
+        let guest_addr = shm_region.guest_addr + shmem_offset;
 
+        println!(
+            "unmapping: guest_addr={:x}, size={}",
+            guest_addr, resource.size
+        );
+        let (reply_sender, reply_receiver) = unbounded();
+        self.map_sender.send(MemoryMapping::RemoveMapping(
+            reply_sender,
+            guest_addr,
+            resource.size,
+        ));
+        let success = reply_receiver.recv().unwrap();
+        if !success {
+            println!("HVF UNMAP FAILED");
+            return Err(ErrUnspec);
+        }
+
+        /*
         let ret = unsafe {
             libc::mmap(
                 addr as *mut libc::c_void,
@@ -554,6 +635,7 @@ impl VirtioGpu {
         if ret == libc::MAP_FAILED {
             panic!("UNMAP failed");
         }
+        */
 
         resource.shmem_offset = None;
 

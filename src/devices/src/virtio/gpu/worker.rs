@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{result, thread};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
     RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
@@ -17,6 +17,7 @@ use super::protocol::{
     virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry, GpuCommand, GpuResponse, VirtioGpuResult,
 };
 use super::virtio_gpu::VirtioGpu;
+use super::MemoryMapping;
 use crate::legacy::Gic;
 use crate::virtio::gpu::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use crate::virtio::gpu::virtio_gpu::VirtioGpuRing;
@@ -31,6 +32,7 @@ pub struct Worker {
     intc: Option<Arc<Mutex<Gic>>>,
     irq_line: Option<u32>,
     shm_region: VirtioShmRegion,
+    map_sender: Sender<MemoryMapping>,
 }
 
 impl Worker {
@@ -44,6 +46,7 @@ impl Worker {
         intc: Option<Arc<Mutex<Gic>>>,
         irq_line: Option<u32>,
         shm_region: VirtioShmRegion,
+        map_sender: Sender<MemoryMapping>,
     ) -> Self {
         Self {
             receiver,
@@ -54,6 +57,7 @@ impl Worker {
             intc,
             irq_line,
             shm_region,
+            map_sender,
         }
     }
 
@@ -69,6 +73,7 @@ impl Worker {
             self.interrupt_evt.try_clone().unwrap(),
             self.intc.clone(),
             self.irq_line,
+            self.map_sender.clone(),
         );
 
         loop {

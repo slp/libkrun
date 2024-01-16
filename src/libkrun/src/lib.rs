@@ -18,6 +18,8 @@ use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
+use crossbeam_channel::unbounded;
+use devices::virtio::gpu::MemoryMapping;
 #[cfg(feature = "tee")]
 use devices::virtio::CacheType;
 use env_logger::Env;
@@ -848,13 +850,31 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         }
     }
 
-    let _vmm = match vmm::builder::build_microvm(&ctx_cfg.vmr, &mut event_manager) {
+    let (sender, receiver) = unbounded();
+
+    let vmm = match vmm::builder::build_microvm(&ctx_cfg.vmr, sender, &mut event_manager) {
         Ok(vmm) => vmm,
         Err(e) => {
             error!("Building the microVM failed: {:?}", e);
             return -libc::EINVAL;
         }
     };
+
+    let mapper_vmm = vmm.clone();
+
+    std::thread::spawn(move || loop {
+        match receiver.recv() {
+            Err(e) => error!("Error in receiver: {:?}", e),
+            Ok(m) => match m {
+                MemoryMapping::AddMapping(s, h, g, l) => {
+                    mapper_vmm.lock().unwrap().add_mapping(s, h, g, l)
+                }
+                MemoryMapping::RemoveMapping(s, g, l) => {
+                    mapper_vmm.lock().unwrap().remove_mapping(s, g, l)
+                }
+            },
+        }
+    });
 
     loop {
         match event_manager.run() {

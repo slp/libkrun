@@ -6,8 +6,10 @@
 // found in the THIRD-PARTY file.
 
 use std::cell::Cell;
+use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::ptr::null_mut;
 use std::result;
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex};
@@ -122,19 +124,58 @@ impl Vm {
         for region in guest_mem.iter() {
             // It's safe to unwrap because the guest address is valid.
             let host_addr = guest_mem.get_host_address(region.start_addr()).unwrap();
-            debug!(
+            println!(
                 "Guest memory host_addr={:x?} guest_addr={:x?} len={:x?}",
                 host_addr,
                 region.start_addr().raw_value(),
                 region.len()
             );
-            self.hvf_vm
-                .map_memory(
-                    host_addr as u64,
-                    region.start_addr().raw_value() as u64,
-                    region.len() as u64,
-                )
-                .map_err(Error::SetUserMemoryRegion)?;
+            if region.len() == 0x20000001 {
+                /*
+                                let path = CString::new("/tmp/user/maptestX").unwrap();
+                                unsafe { libc::shm_unlink(path.as_ptr()) };
+                                let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
+                                println!("XXX - fd={fd}");
+                                let tmp_addr = 0u64;
+                                unsafe { libc::munmap(host_addr as *mut libc::c_void, region.len() as usize) };
+                                let ret = unsafe {
+                                    libc::mmap(
+                                        host_addr as *mut libc::c_void,
+                                        region.len() as usize,
+                                        libc::PROT_READ | libc::PROT_WRITE,
+                                        libc::MAP_SHARED | libc::MAP_FIXED,
+                                        fd,
+                                        0 as libc::off_t,
+                                    )
+                                };
+                                if ret == libc::MAP_FAILED {
+                                    println!("MAP_FAILED");
+                                } else {
+                                    println!("MAP_OK");
+                                }
+
+                                println!("BEFORE TOUCHING");
+                                let test = host_addr as *mut u32;
+                                unsafe { *test = 66 };
+                                println!("AFTER TOUCHING");
+
+                                self.hvf_vm
+                                    .map_memory(
+                                        host_addr as u64,
+                                        region.start_addr().raw_value() as u64,
+                                        region.len() as u64,
+                                    )
+                                    .map_err(Error::SetUserMemoryRegion)?;
+                */
+            } else {
+                self.hvf_vm
+                    .map_memory(
+                        host_addr as u64,
+                        region.start_addr().raw_value() as u64,
+                        region.len() as u64,
+                    )
+                    .map_err(Error::SetUserMemoryRegion)?;
+            }
         }
 
         Ok(())
@@ -150,6 +191,39 @@ impl Vm {
     #[allow(clippy::borrowed_box)]
     pub fn get_irqchip(&self) -> &Box<dyn GICDevice> {
         self.irqchip_handle.as_ref().unwrap()
+    }
+
+    pub fn add_mapping(
+        &self,
+        reply_sender: Sender<bool>,
+        host_addr: u64,
+        guest_addr: u64,
+        len: u64,
+    ) {
+        println!("add_mapping: host_addr={host_addr:x}, guest_addr={guest_addr:x}, len={len}");
+        if let Err(e) = self.hvf_vm.unmap_memory(guest_addr, len) {
+            println!("Error removing memory map to HVF: {:?}", e);
+        } else {
+            println!("HVF memory map removed");
+        }
+        if let Err(e) = self.hvf_vm.map_memory(host_addr, guest_addr, len) {
+            println!("Error adding memory map to HVF: {:?}", e);
+            reply_sender.send(false);
+        } else {
+            println!("HVF memory map added");
+            reply_sender.send(true);
+        }
+    }
+
+    pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
+        println!("remove_mapping: guest_addr={guest_addr:x}, len={len}");
+        if let Err(e) = self.hvf_vm.unmap_memory(guest_addr, len) {
+            println!("Error removing memory map to HVF: {:?}", e);
+            reply_sender.send(false);
+        } else {
+            println!("HVF memory map removed");
+            reply_sender.send(true);
+        }
     }
 }
 

@@ -1,3 +1,5 @@
+use crossbeam_channel::{bounded, unbounded, Sender};
+
 mod device;
 mod event_handler;
 mod protocol;
@@ -8,6 +10,11 @@ use super::descriptor_utils::Error as DescriptorError;
 
 pub use self::defs::uapi::VIRTIO_ID_GPU as TYPE_GPU;
 pub use self::device::Gpu;
+
+pub enum MemoryMapping {
+    AddMapping(Sender<bool>, u64, u64, u64),
+    RemoveMapping(Sender<bool>, u64, u64),
+}
 
 mod defs {
     pub const GPU_DEV_ID: &str = "virtio_gpu";
