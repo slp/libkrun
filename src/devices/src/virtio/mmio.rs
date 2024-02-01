@@ -241,7 +241,11 @@ impl BusDevice for MmioTransport {
                         }
                         features
                     }
-                    0x34 => self.with_queue(0, |q| u32::from(q.get_max_size())),
+                    0x34 => {
+                        let val = self.with_queue(0, |q| u32::from(q.get_max_size()));
+                        println!("get_max_size: {}", val);
+                        val
+                    }
                     0x44 => self.with_queue(0, |q| q.ready as u32),
                     0x60 => self.interrupt_status.load(Ordering::SeqCst) as u32,
                     0x70 => self.device_status,
@@ -314,7 +318,10 @@ impl BusDevice for MmioTransport {
                         }
                     }
                     0x24 => self.acked_features_select = v,
-                    0x30 => self.queue_select = v,
+                    0x30 => {
+                        self.queue_select = v;
+                        println!("queue select: {}", v);
+                    }
                     0x38 => self.update_queue_field(|q| q.size = v as u16),
                     0x44 => self.update_queue_field(|q| q.ready = v == 1),
                     0x50 => {

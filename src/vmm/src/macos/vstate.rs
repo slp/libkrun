@@ -395,6 +395,7 @@ impl Vcpu {
                     Ok(VcpuEmulation::Handled)
                 }
                 VcpuExit::MmioWrite(addr, data) => {
+                    //debug!("mmio_write: 0x{:x}, data={:?}", addr, data);
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         mmio_bus.write(vcpuid, addr, data);
                     }

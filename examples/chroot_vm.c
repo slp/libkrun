@@ -237,7 +237,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (1) and the amount of RAM (512 MiB).
-    if (err = krun_set_vm_config(ctx_id, 1, 512)) {
+    if (err = krun_set_vm_config(ctx_id, 1, 1024)) {
         errno = -err;
         perror("Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
@@ -281,6 +281,7 @@ int main(int argc, char *const argv[])
             return -1;
         }
     } else {
+/*
         int passt_fd = cmdline.passt_socket_path ? connect_to_passt(cmdline.passt_socket_path) : start_passt();
 
         if (passt_fd < 0) {
@@ -292,6 +293,7 @@ int main(int argc, char *const argv[])
             perror("Error configuring net mode");
             return -1;
         }
+*/
     }
 
     // Configure the rlimits that will be set in the guest

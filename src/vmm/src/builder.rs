@@ -6,8 +6,10 @@
 #[cfg(target_os = "macos")]
 use crossbeam_channel::unbounded;
 use std::fmt::{Display, Formatter};
+use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::io::Read;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
 use super::{Error, Vmm};
@@ -16,7 +18,7 @@ use super::{Error, Vmm};
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use devices::legacy::Gic;
-use devices::legacy::Serial;
+use devices::legacy::Pl011;
 #[cfg(feature = "net")]
 use devices::virtio::Net;
 #[cfg(not(feature = "tee"))]
@@ -383,7 +385,6 @@ pub fn build_microvm(
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    /*
     let serial_device = if cfg!(target_arch = "x86_64")
         || (cfg!(target_arch = "aarch64") && kernel_cmdline.as_str().contains("console="))
     {
@@ -395,9 +396,8 @@ pub fn build_microvm(
     } else {
         None
     };
-    */
 
-    let serial_device = None;
+    //let serial_device = None;
 
     let exit_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -486,7 +486,7 @@ pub fn build_microvm(
             &vm,
             &vcpu_config,
             &guest_memory,
-            GuestAddress(kernel_bundle.guest_addr),
+            GuestAddress(0u64),
             request_ts,
             &exit_evt,
             intc.clone().unwrap(),
@@ -693,10 +693,13 @@ pub fn create_guest_memory(
     let guest_mem = GuestMemoryMmap::from_ranges(&arch_mem_regions)
         .map_err(StartMicrovmError::GuestMemoryMmap)?;
 
-    let kernel_data = unsafe { std::slice::from_raw_parts(kernel_region.as_ptr(), kernel_size) };
-    guest_mem
-        .write(kernel_data, GuestAddress(kernel_load_addr as u64))
-        .unwrap();
+    let ovmf = std::fs::read("/Volumes/krunvm/root/vfs/dir/ce8f1856c85dc6de63621c9e68514862be3d40bfda199ae1fa6995d55117d679/root/rpmbuild/BUILD/edk2-ba91d0292e59/Fedora/aarch64/QEMU_EFI-pflash.raw").unwrap();
+    guest_mem.write(&ovmf, GuestAddress(0u64)).unwrap();
+    println!("QEMU_EFI");
+    //let kernel_data = unsafe { std::slice::from_raw_parts(kernel_region.as_ptr(), kernel_size) };
+    //guest_mem
+    //    .write(kernel_data, GuestAddress(kernel_load_addr as u64))
+    //    .unwrap();
     Ok((guest_mem, arch_mem_info))
 }
 
@@ -778,11 +781,11 @@ pub fn setup_serial_device(
     event_manager: &mut EventManager,
     input: Box<dyn devices::legacy::ReadableFd + Send>,
     out: Box<dyn io::Write + Send>,
-) -> std::result::Result<Arc<Mutex<Serial>>, StartMicrovmError> {
+) -> std::result::Result<Arc<Mutex<Pl011>>, StartMicrovmError> {
     let interrupt_evt = EventFd::new(utils::eventfd::EFD_NONBLOCK)
         .map_err(Error::EventFd)
         .map_err(StartMicrovmError::Internal)?;
-    let serial = Arc::new(Mutex::new(Serial::new_in_out(interrupt_evt, input, out)));
+    let serial = Arc::new(Mutex::new(Pl011::new_in_out(interrupt_evt, input, out)));
     if let Err(e) = event_manager.add_subscriber(serial.clone()) {
         // TODO: We just log this message, and immediately return Ok, instead of returning the
         // actual error because this operation always fails with EPERM when adding a fd which
@@ -851,7 +854,7 @@ fn attach_legacy_devices(
     mmio_device_manager: &mut MMIODeviceManager,
     kernel_cmdline: &mut kernel::cmdline::Cmdline,
     intc: Option<Arc<Mutex<Gic>>>,
-    serial: Option<Arc<Mutex<Serial>>>,
+    serial: Option<Arc<Mutex<Pl011>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     if let Some(serial) = serial {
         mmio_device_manager

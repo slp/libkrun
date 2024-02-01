@@ -172,7 +172,7 @@ fn create_memory_node(
     _guest_mem: &GuestMemoryMmap,
     arch_memory_info: &ArchMemoryInfo,
 ) -> Result<()> {
-    let mem_size = arch_memory_info.ram_last_addr - super::layout::DRAM_MEM_START + 1;
+    let mem_size = arch_memory_info.ram_last_addr - super::layout::DRAM_MEM_START;
     // See https://github.com/torvalds/linux/blob/master/Documentation/devicetree/booting-without-of.txt#L960
     // for an explanation of this.
     let mem_reg_prop = generate_prop64(&[super::layout::DRAM_MEM_START, mem_size]);
@@ -320,8 +320,11 @@ fn create_serial_node<T: DeviceInfoForFDT + Clone + Debug>(
     let serial_reg_prop = generate_prop64(&[dev_info.addr(), dev_info.length()]);
     let irq = generate_prop32(&[GIC_FDT_IRQ_TYPE_SPI, dev_info.irq(), IRQ_TYPE_EDGE_RISING]);
 
+    println!("serial_addr: 0x{:x}", dev_info.addr());
+
     let node = fdt.begin_node(&format!("uart@{:x}", dev_info.addr()))?;
-    fdt.property_string("compatible", "ns16550a")?;
+    fdt.property_string("compatible", "arm,pl011")?;
+    fdt.property_string("status", "okay")?;
     fdt.property("reg", &serial_reg_prop)?;
     fdt.property_u32("clocks", CLOCK_PHANDLE)?;
     fdt.property_string("clock-names", "apb_pclk")?;

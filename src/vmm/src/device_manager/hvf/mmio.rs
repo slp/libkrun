@@ -145,11 +145,19 @@ impl MMIODeviceManager {
         &mut self,
         _vm: &Vm,
         cmdline: &mut kernel_cmdline::Cmdline,
-        _intc: Option<Arc<Mutex<devices::legacy::Gic>>>,
-        serial: Arc<Mutex<devices::legacy::Serial>>,
+        intc: Option<Arc<Mutex<devices::legacy::Gic>>>,
+        serial: Arc<Mutex<devices::legacy::Pl011>>,
     ) -> Result<()> {
         if self.irq > self.last_irq {
             return Err(Error::IrqsExhausted);
+        }
+
+        {
+            let mut serial = serial.lock().unwrap();
+            if let Some(intc) = intc {
+                serial.set_intc(intc);
+            }
+            serial.set_irq_line(self.irq);
         }
 
         self.bus

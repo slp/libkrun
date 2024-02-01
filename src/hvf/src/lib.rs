@@ -357,6 +357,8 @@ impl<'a> HvfVcpu<'a> {
             return Err(Error::VcpuRun);
         }
 
+        //println!("XXX - exit={:?}", self.vcpu_exit.reason);
+
         match self.vcpu_exit.reason {
             HV_EXIT_REASON_CANCELED => Ok(VcpuExit::Canceled),
             HV_EXIT_REASON_EXCEPTION => {
@@ -423,10 +425,10 @@ impl<'a> HvfVcpu<'a> {
                         let len: usize = (1 << sas) as usize;
                         let srt: u32 = (syndrome as u32 >> 16) & 0x1f;
 
-                        debug!("data abort: va={:x}, pa={:x}, isv={}, iswrite={:?}, s1ptrw={}, len={}, srt={}",
-                               self.vcpu_exit.exception.virtual_address,
-                               self.vcpu_exit.exception.physical_address,
-                               isv, iswrite, s1ptw, len, srt);
+                        //debug!("data abort: va={:x}, pa={:x}, isv={}, iswrite={:?}, s1ptrw={}, len={}, srt={}",
+                        //       self.vcpu_exit.exception.virtual_address,
+                        //       self.vcpu_exit.exception.physical_address,
+                        //       isv, iswrite, s1ptw, len, srt);
 
                         let pa = self.vcpu_exit.exception.physical_address;
                         self.pending_advance_pc = true;

@@ -297,6 +297,10 @@ impl VirtioDevice for Console {
     }
 
     fn queues(&self) -> &[VirtQueue] {
+        println!(
+            "console: queues: {}",
+            self.queues.get(0).unwrap().get_max_size()
+        );
         &self.queues
     }
 

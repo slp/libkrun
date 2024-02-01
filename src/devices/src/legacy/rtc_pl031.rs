@@ -83,6 +83,7 @@ impl RTC {
     }
 
     fn trigger_interrupt(&mut self) -> Result<()> {
+        println!("XXX RTC INT");
         self.interrupt_evt.write(1).map_err(Error::InterruptFailure)
     }
 

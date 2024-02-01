@@ -56,6 +56,7 @@ pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, u
     (
         info,
         vec![
+            (GuestAddress(0u64), 0x8000000),
             (GuestAddress(layout::DRAM_MEM_START), dram_size),
             (GuestAddress(shm_start_addr), MMIO_SHM_SIZE as usize),
         ],
@@ -71,7 +72,11 @@ pub fn arch_memory_regions(size: usize) -> (ArchMemoryInfo, Vec<(GuestAddress, u
     };
     (
         info,
-        vec![(GuestAddress(layout::DRAM_MEM_START), dram_size)],
+        vec![
+            (GuestAddress(0u64), 0x8000000),
+            //(GuestAddress(0x40000000), 0x100000),
+            (GuestAddress(layout::DRAM_MEM_START), dram_size),
+        ],
     )
 }
 
@@ -134,11 +139,13 @@ pub fn get_fdt_addr(mem: &GuestMemoryMmap) -> u64 {
     // we return the start of the DRAM so that
     // we allow the code to try and load the FDT.
 
+    /*
     if let Some(addr) = mem.last_addr().checked_sub(layout::FDT_MAX_SIZE as u64 - 1) {
         if mem.address_in_range(addr) {
             return addr.raw_value();
         }
     }
+    */
 
     layout::DRAM_MEM_START
 }

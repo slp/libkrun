@@ -179,6 +179,7 @@ impl Serial {
 
     // Handles a write request from the driver.
     fn handle_write(&mut self, offset: u8, value: u8) -> io::Result<()> {
+        debug!("handle_write: offset={:x} value={:x}", offset, value);
         match offset {
             DLAB_LOW if self.is_dlab_set() => {
                 self.baud_divisor = (self.baud_divisor & 0xff00) | u16::from(value)
@@ -211,6 +212,7 @@ impl Serial {
 
     // Handles a read request from the driver.
     fn handle_read(&mut self, offset: u8) -> u8 {
+        debug!("handle_read: offset={:x}", offset);
         match offset {
             DLAB_LOW if self.is_dlab_set() => self.baud_divisor as u8,
             DLAB_HIGH if self.is_dlab_set() => (self.baud_divisor >> 8) as u8,
@@ -247,6 +249,7 @@ impl Serial {
 
 impl BusDevice for Serial {
     fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
+        debug!("read: offset={:x}", offset);
         if data.len() != 1 {
             return;
         }
@@ -255,6 +258,7 @@ impl BusDevice for Serial {
     }
 
     fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
+        debug!("write: offset={:x}", offset);
         if data.len() != 1 {
             return;
         }
