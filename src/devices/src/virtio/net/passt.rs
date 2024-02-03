@@ -134,7 +134,7 @@ impl Passt {
             match recv(
                 self.fd,
                 buf,
-                MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+                MsgFlags::MSG_DONTWAIT, /*| MsgFlags::MSG_NOSIGNAL*/
             ) {
                 Ok(size) => bytes_read += size,
                 #[allow(unreachable_patterns)]
@@ -149,7 +149,7 @@ impl Passt {
             match recv(
                 self.fd,
                 &mut buf[bytes_read..],
-                MsgFlags::MSG_WAITALL | MsgFlags::MSG_NOSIGNAL,
+                MsgFlags::MSG_WAITALL, /*| MsgFlags::MSG_NOSIGNAL*/
             ) {
                 #[allow(unreachable_patterns)]
                 Err(nix::Error::EAGAIN | nix::Error::EWOULDBLOCK) => {
@@ -174,7 +174,7 @@ impl Passt {
             match send(
                 self.fd,
                 &buf[bytes_send..],
-                MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+                MsgFlags::MSG_DONTWAIT, /*| MsgFlags::MSG_NOSIGNAL*/
             ) {
                 Ok(size) => bytes_send += size,
                 #[allow(unreachable_patterns)]

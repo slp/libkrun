@@ -18,14 +18,12 @@ use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
-#[cfg(feature = "tee")]
 use devices::virtio::CacheType;
 use env_logger::Env;
 use libc::{c_char, c_int, size_t};
 use once_cell::sync::Lazy;
 use polly::event_manager::EventManager;
 use vmm::resources::VmResources;
-#[cfg(feature = "tee")]
 use vmm::vmm_config::block::BlockDeviceConfig;
 use vmm::vmm_config::boot_source::{BootSourceConfig, DEFAULT_KERNEL_CMDLINE};
 #[cfg(not(feature = "tee"))]
@@ -82,7 +80,6 @@ struct ContextConfig {
     net_cfg: NetworkConfig,
     #[cfg(not(feature = "tee"))]
     fs_cfg: Option<FsDeviceConfig>,
-    #[cfg(feature = "tee")]
     root_block_cfg: Option<BlockDeviceConfig>,
     #[cfg(feature = "tee")]
     data_block_cfg: Option<BlockDeviceConfig>,
@@ -156,12 +153,10 @@ impl ContextConfig {
         self.fs_cfg.clone()
     }
 
-    #[cfg(feature = "tee")]
     fn set_root_block_cfg(&mut self, block_cfg: BlockDeviceConfig) {
         self.root_block_cfg = Some(block_cfg);
     }
 
-    #[cfg(feature = "tee")]
     fn get_root_block_cfg(&self) -> Option<BlockDeviceConfig> {
         self.root_block_cfg.clone()
     }
@@ -435,7 +430,6 @@ pub unsafe extern "C" fn krun_set_mapped_volumes(
 
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
-#[cfg(feature = "tee")]
 pub unsafe extern "C" fn krun_set_root_disk(ctx_id: u32, c_disk_path: *const c_char) -> i32 {
     let disk_path = match CStr::from_ptr(c_disk_path).to_str() {
         Ok(disk) => disk,
@@ -778,7 +772,6 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         }
     }
 
-    #[cfg(feature = "tee")]
     if let Some(block_cfg) = ctx_cfg.get_root_block_cfg() {
         if ctx_cfg.vmr.add_block_device(block_cfg).is_err() {
             error!("Error configuring virtio-blk for root block");

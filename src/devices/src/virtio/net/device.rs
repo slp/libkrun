@@ -12,6 +12,7 @@ use crate::virtio::{
     ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_NET, VIRTIO_MMIO_INT_VRING,
 };
 use crate::Error as DeviceError;
+use std::io::Write;
 use std::os::fd::RawFd;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -20,9 +21,9 @@ use std::{cmp, mem, result};
 use utils::eventfd::EventFd;
 use virtio_bindings::virtio_net::{
     virtio_net_hdr_v1, VIRTIO_NET_F_CSUM, VIRTIO_NET_F_GUEST_CSUM, VIRTIO_NET_F_GUEST_TSO4,
-    VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO,
+    VIRTIO_NET_F_GUEST_UFO, VIRTIO_NET_F_HOST_TSO4, VIRTIO_NET_F_HOST_UFO, VIRTIO_NET_F_MAC,
 };
-use vm_memory::{Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
+use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
 const VIRTIO_F_VERSION_1: u32 = 32;
 
@@ -45,6 +46,17 @@ enum TxError {
     Passt(passt::WriteError),
     DeviceError(DeviceError),
 }
+
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(C, packed)]
+struct VirtioNetConfig {
+    mac: [u8; 6],
+    status: u16,
+    max_virtqueue_pairs: u16,
+}
+
+// Safe because it only has data and has no implicit padding.
+unsafe impl ByteValued for VirtioNetConfig {}
 
 pub(crate) fn vnet_hdr_len() -> usize {
     mem::size_of::<virtio_net_hdr_v1>()
@@ -84,6 +96,8 @@ pub struct Net {
 
     intc: Option<Arc<Mutex<Gic>>>,
     irq_line: Option<u32>,
+
+    config: VirtioNetConfig,
 }
 
 impl Net {
@@ -96,14 +110,21 @@ impl Net {
             | 1 << VIRTIO_NET_F_HOST_TSO4
             | 1 << VIRTIO_NET_F_GUEST_UFO
             | 1 << VIRTIO_NET_F_HOST_UFO
+            | 1 << VIRTIO_NET_F_MAC
             | 1 << VIRTIO_F_VERSION_1;
 
         let mut queue_evts = Vec::new();
         for _ in QUEUE_SIZES.iter() {
-            queue_evts.push(EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?);
+            queue_evts.push(EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?);
         }
 
         let queues = QUEUE_SIZES.iter().map(|&s| Queue::new(s)).collect();
+
+        let config = VirtioNetConfig {
+            mac: [0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee],
+            status: 0,
+            max_virtqueue_pairs: 0,
+        };
 
         Ok(Net {
             id,
@@ -124,13 +145,15 @@ impl Net {
             tx_iovec: Vec::with_capacity(QUEUE_SIZE as usize),
 
             interrupt_status: Arc::new(AtomicUsize::new(0)),
-            interrupt_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?,
+            interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?,
 
             device_state: DeviceState::Inactive,
-            activate_evt: EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?,
+            activate_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(Error::EventFd)?,
 
             intc: None,
             irq_line: None,
+
+            config,
         })
     }
 
@@ -139,7 +162,12 @@ impl Net {
         &self.id
     }
 
+    pub fn set_intc(&mut self, intc: Arc<Mutex<Gic>>) {
+        self.intc = Some(intc);
+    }
+
     pub(crate) fn process_rx_queue_event(&mut self) {
+        //println!("process_rx_queue_event");
         if let Err(e) = self.queue_evts[RX_INDEX].read() {
             log::error!("Failed to get rx event from queue: {:?}", e);
         }
@@ -149,6 +177,7 @@ impl Net {
     }
 
     pub(crate) fn process_tx_queue_event(&mut self) {
+        //println!("process_tx_queue_event");
         match self.queue_evts[TX_INDEX].read() {
             Ok(_) => {
                 if let Err(e) = self.process_tx() {
@@ -162,6 +191,7 @@ impl Net {
     }
 
     pub(crate) fn process_passt_socket_readable(&mut self) {
+        //println!("process_passt_socket_readable");
         if let Err(e) = self.process_rx() {
             log::error!("Failed to process rx: {e:?} (triggered by passt socket readable)");
         };
@@ -195,9 +225,11 @@ impl Net {
         // if we have a deferred frame we try to process it first,
         // if that is not possible, we don't continue processing other frames
         if self.rx_has_deferred_frame {
+            //println!("has_dereferred_frame");
             if self.write_frame_to_guest() {
                 self.rx_has_deferred_frame = false;
             } else {
+                //println!("has_deferred_frame returning OK");
                 return Ok(());
             }
         }
@@ -208,7 +240,9 @@ impl Net {
         let result = loop {
             match self.read_into_rx_frame_buf_from_passt() {
                 Ok(()) => {
+                    //println!("process_rx: OK");
                     if self.write_frame_to_guest() {
+                        //println!("write_frame_to_guest");
                         signal_queue = true;
                     } else {
                         self.rx_has_deferred_frame = true;
@@ -285,12 +319,14 @@ impl Net {
                 }
             }
 
+            //println!("write to passt");
             self.tx_frame_len = read_count;
             match self
                 .passt
                 .write_frame(vnet_hdr_len(), &mut self.tx_frame_buf[..read_count])
             {
                 Ok(()) => {
+                    //println!("write to passt: OK");
                     self.tx_frame_len = 0;
                     tx_queue.add_used(mem, head_index, 0);
                     raise_irq = true;
@@ -330,9 +366,11 @@ impl Net {
     }
 
     fn signal_used_queue(&mut self) -> result::Result<(), DeviceError> {
+        //println!("signal_used_queue");
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
+            //println!("using intc with line={}", self.irq_line.unwrap());
             intc.lock().unwrap().set_irq(self.irq_line.unwrap());
             Ok(())
         } else {
@@ -467,12 +505,18 @@ impl VirtioDevice for Net {
         self.irq_line = Some(irq);
     }
 
-    fn read_config(&self, offset: u64, data: &mut [u8]) {
-        log::warn!(
-            "Net: guest driver attempted to read device config (offset={:x}, len={:x})",
-            offset,
-            data.len()
-        );
+    fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+        let config_slice = self.config.as_slice();
+        let config_len = config_slice.len() as u64;
+        if offset >= config_len {
+            error!("Failed to read config space");
+            return;
+        }
+        if let Some(end) = offset.checked_add(data.len() as u64) {
+            // This write can't fail, offset and end are checked against config_len.
+            data.write_all(&config_slice[offset as usize..cmp::min(end, config_len) as usize])
+                .unwrap();
+        }
     }
 
     fn write_config(&mut self, offset: u64, data: &[u8]) {

@@ -34,7 +34,7 @@ static void print_help(char *const name)
         "OPTIONS: \n"
         "        -h    --help                Show help\n"
         "              --net=NET_MODE        Set network mode\n"
-        "              --passt-socket=PATH   Instead of starting passt, connect to passt socket at PATH"
+        "              --net-socket=PATH   Instead of starting passt, connect to passt socket at PATH"
         "NET_MODE can be either TSI (default) or PASST\n"
         "\n"
         "NEWROOT:      the root directory of the vm\n"
@@ -47,7 +47,7 @@ static void print_help(char *const name)
 static const struct option long_options[] = {
     { "help", no_argument, NULL, 'h' },
     { "net_mode", required_argument, NULL, 'N' },
-    { "passt-socket", required_argument, NULL, 'P' },
+    { "net-socket", required_argument, NULL, 'P' },
     { NULL, 0, NULL, 0 }
 };
 
@@ -66,7 +66,7 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
     // set the defaults
     *cmdline = (struct cmdline){
         .show_help = false,
-        .net_mode = NET_MODE_TSI,
+        .net_mode = NET_MODE_PASST,
         .passt_socket_path = NULL,
         .new_root = NULL,
         .guest_argv = NULL,
@@ -237,7 +237,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (1) and the amount of RAM (512 MiB).
-    if (err = krun_set_vm_config(ctx_id, 1, 1024)) {
+    if (err = krun_set_vm_config(ctx_id, 2, 2048)) {
         errno = -err;
         perror("Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
@@ -246,6 +246,13 @@ int main(int argc, char *const argv[])
     if (err = krun_set_root(ctx_id, cmdline.new_root)) {
         errno = -err;
         perror("Error configuring root path");
+        return -1;
+    }
+
+    // Use the first command line argument as the disk image containing the root fs.
+    if (err = krun_set_root_disk(ctx_id, "fedora-coreos-39.raw")) {
+        errno = -err;
+        perror("Error configuring root disk image");
         return -1;
     }
 
@@ -281,7 +288,6 @@ int main(int argc, char *const argv[])
             return -1;
         }
     } else {
-/*
         int passt_fd = cmdline.passt_socket_path ? connect_to_passt(cmdline.passt_socket_path) : start_passt();
 
         if (passt_fd < 0) {
@@ -293,7 +299,6 @@ int main(int argc, char *const argv[])
             perror("Error configuring net mode");
             return -1;
         }
-*/
     }
 
     // Configure the rlimits that will be set in the guest

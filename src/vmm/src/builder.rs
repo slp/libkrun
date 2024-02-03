@@ -31,11 +31,11 @@ use kbs_types::Tee;
 use crate::device_manager;
 #[cfg(feature = "tee")]
 use crate::resources::TeeConfig;
+#[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigint_handler;
 #[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigwinch_handler;
 use crate::terminal::term_set_raw_mode;
-#[cfg(feature = "tee")]
 use crate::vmm_config::block::BlockBuilder;
 use crate::vmm_config::boot_source::DEFAULT_KERNEL_CMDLINE;
 #[cfg(not(feature = "tee"))]
@@ -56,6 +56,7 @@ use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use nix::unistd::isatty;
 use polly::event_manager::{Error as EventManagerError, EventManager};
 use utils::eventfd::EventFd;
+use utils::terminal::Terminal;
 use utils::time::TimestampUs;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
 use vm_memory::mmap::GuestRegionMmap;
@@ -255,6 +256,37 @@ impl Display for StartMicrovmError {
         }
     }
 }
+
+// Wrapper over io::Stdin that implements `Serial::ReadableFd` and `vmm::VmmEventsObserver`.
+pub struct SerialStdin(io::Empty);
+impl SerialStdin {
+    /// Returns a `SerialStdin` wrapper over `io::stdin`.
+    pub fn get() -> Self {
+        let stdin = io::empty();
+        //stdin.lock().set_raw_mode().unwrap();
+        SerialStdin(stdin)
+    }
+
+    pub fn restore() {
+        let stdin = io::stdin();
+        stdin.lock().set_canon_mode().unwrap();
+    }
+}
+
+impl io::Read for SerialStdin {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl AsRawFd for SerialStdin {
+    fn as_raw_fd(&self) -> RawFd {
+        //self.0.as_raw_fd()
+        -1
+    }
+}
+
+impl devices::legacy::ReadableFd for SerialStdin {}
 
 /// Builds and starts a microVM based on the current Firecracker VmResources configuration.
 ///
@@ -511,8 +543,8 @@ pub fn build_microvm(
         guest_addr: arch_memory_info.shm_start_addr,
         size: arch_memory_info.shm_size as usize,
     });
-    #[cfg(target_os = "macos")]
-    let shm_region = None;
+    //#[cfg(target_os = "macos")]
+    //let shm_region = None;
 
     let mut vmm = Vmm {
         guest_memory,
@@ -529,9 +561,10 @@ pub fn build_microvm(
 
     #[cfg(not(feature = "tee"))]
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
-    #[cfg(not(feature = "tee"))]
+    //#[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
     attach_console_devices(&mut vmm, event_manager, intc.clone())?;
+    /*
     #[cfg(not(feature = "tee"))]
     attach_fs_devices(
         &mut vmm,
@@ -540,15 +573,20 @@ pub fn build_microvm(
         shm_region,
         intc.clone(),
     )?;
-    #[cfg(feature = "tee")]
+    */
     attach_block_devices(&mut vmm, &vm_resources.block, event_manager, intc.clone())?;
     if let Some(vsock) = vm_resources.vsock.get() {
-        attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc)?;
+        attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc.clone())?;
         vmm.kernel_cmdline.insert_str("tsi_hijack")?;
     }
 
     #[cfg(feature = "net")]
-    attach_net_devices(&mut vmm, vm_resources.net_builder.iter(), event_manager)?;
+    attach_net_devices(
+        &mut vmm,
+        vm_resources.net_builder.iter(),
+        event_manager,
+        intc.clone(),
+    )?;
 
     if let Some(s) = &vm_resources.boot_config.kernel_cmdline_epilog {
         vmm.kernel_cmdline.insert_str(s).unwrap();
@@ -786,6 +824,7 @@ pub fn setup_serial_device(
         .map_err(Error::EventFd)
         .map_err(StartMicrovmError::Internal)?;
     let serial = Arc::new(Mutex::new(Pl011::new_in_out(interrupt_evt, input, out)));
+    /*
     if let Err(e) = event_manager.add_subscriber(serial.clone()) {
         // TODO: We just log this message, and immediately return Ok, instead of returning the
         // actual error because this operation always fails with EPERM when adding a fd which
@@ -794,6 +833,7 @@ pub fn setup_serial_device(
         // while we're at it).
         warn!("Could not add serial input event to epoll: {:?}", e);
     }
+    */
     Ok(serial)
 }
 
@@ -1058,11 +1098,14 @@ fn attach_console_devices(
     }
 
     let console_input = if stdin_is_terminal {
+        println!("is_terminal");
         Some(port_io::stdin().unwrap())
     } else {
+        println!("is NOT terminal");
         let sigint_input = port_io::PortInputSigInt::new();
         let sigint_input_fd = sigint_input.sigint_evt().as_raw_fd();
 
+        #[cfg(target_os = "linux")]
         register_sigint_handler(sigint_input_fd).map_err(RegisterFsSigwinch)?;
 
         Some(Box::new(sigint_input) as _)
@@ -1132,12 +1175,17 @@ fn attach_net_devices<'a>(
     vmm: &mut Vmm,
     net_devices: impl Iterator<Item = &'a Arc<Mutex<Net>>>,
     event_manager: &mut EventManager,
+    intc: Option<Arc<Mutex<Gic>>>,
 ) -> Result<(), StartMicrovmError> {
     for net_device in net_devices {
         let id = net_device.lock().unwrap().id().to_string();
         event_manager
             .add_subscriber(net_device.clone())
             .map_err(StartMicrovmError::RegisterEvent)?;
+
+        if let Some(intc) = intc.as_ref() {
+            net_device.lock().unwrap().set_intc(intc.clone());
+        }
 
         attach_mmio_device(
             vmm,
@@ -1209,7 +1257,6 @@ fn attach_balloon_device(
     Ok(())
 }
 
-#[cfg(feature = "tee")]
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,

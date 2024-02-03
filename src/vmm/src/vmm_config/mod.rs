@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Wrapper for configuring the Block devices attached to the microVM.
-#[cfg(feature = "tee")]
 pub mod block;
 
 /// Wrapper for configuring the microVM boot source.

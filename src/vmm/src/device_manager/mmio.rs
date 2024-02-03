@@ -119,6 +119,11 @@ impl MMIODeviceManager {
         vm.register_irqfd(mmio_device.locked_device().interrupt_evt(), self.irq)
             .map_err(Error::RegisterIrqFd)?;
 
+        println!(
+            "register_mmio_device: device_id={}, irq={}",
+            device_id, self.irq
+        );
+
         self.bus
             .insert(Arc::new(Mutex::new(mmio_device)), self.mmio_base, MMIO_LEN)
             .map_err(Error::BusError)?;
@@ -321,8 +326,11 @@ mod tests {
             DummyDevice {
                 dummy: 0,
                 queues: QUEUE_SIZES.iter().map(|&s| Queue::new(s)).collect(),
-                queue_evts: [EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD")],
-                interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD"),
+                queue_evts: [
+                    EventFd::new(utils::eventfd::EFD_NONBLOCK).expect("cannot create eventFD")
+                ],
+                interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)
+                    .expect("cannot create eventFD"),
             }
         }
     }

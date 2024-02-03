@@ -121,6 +121,11 @@ impl MMIODeviceManager {
 
         mmio_device.locked_device().set_irq_line(self.irq);
 
+        println!(
+            "register_mmio_serial: device_id={} irq={}",
+            device_id, self.irq
+        );
+
         self.bus
             .insert(Arc::new(Mutex::new(mmio_device)), self.mmio_base, MMIO_LEN)
             .map_err(Error::BusError)?;
@@ -168,6 +173,8 @@ impl MMIODeviceManager {
             .insert("earlycon", &format!("uart,mmio,0x{:08x}", self.mmio_base))
             .map_err(Error::Cmdline)?;
 
+        println!("register_mmio_serial: serial irq={}", self.irq);
+
         let ret = self.mmio_base;
         self.id_to_dev_info.insert(
             (DeviceType::Serial, DeviceType::Serial.to_string()),
@@ -198,6 +205,8 @@ impl MMIODeviceManager {
         self.bus
             .insert(Arc::new(Mutex::new(device)), self.mmio_base, MMIO_LEN)
             .map_err(Error::BusError)?;
+
+        println!("register_mmio_serial: rtc irq={}", self.irq);
 
         let ret = self.mmio_base;
         self.id_to_dev_info.insert(

@@ -83,4 +83,5 @@ pub const GTIMER_PHYS: u32 = 12;
 
 /// Below this address will reside the GIC, above this address will reside the MMIO devices.
 //pub const MAPPED_IO_START: u64 = 1 << 29; // 1 GB
-pub const MAPPED_IO_START: u64 = 0x0810_0000;
+//pub const MAPPED_IO_START: u64 = 0x0810_0000;
+pub const MAPPED_IO_START: u64 = 0x0a00_0000;

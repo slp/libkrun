@@ -303,6 +303,8 @@ fn create_virtio_node<T: DeviceInfoForFDT + Clone + Debug>(
         IRQ_TYPE_EDGE_RISING,
     ]);
 
+    println!("dev_info.irq={}", dev_info.irq());
+
     let virtio_node = fdt.begin_node(&format!("virtio_mmio@{:x}", dev_info.addr()))?;
     fdt.property_string("compatible", "virtio,mmio")?;
     fdt.property("reg", &device_reg_prop)?;

@@ -66,7 +66,7 @@ impl Subscriber for Net {
                 }
                 _ if source == passt_socket => {
                     if event_set.contains(EventSet::HANG_UP)
-                        || event_set.contains(EventSet::READ_HANG_UP)
+                    //|| event_set.contains(EventSet::READ_HANG_UP)
                     {
                         log::error!("Got {event_set:?} on passt fd, virtio-net will stop working");
                         eprintln!("LIBKRUN VIRTIO-NET FATAL: Passt process seems to have quit or crashed! Networking is now disabled!");
@@ -102,10 +102,9 @@ impl Subscriber for Net {
                 EpollEvent::new(EventSet::IN, self.queue_evts[RX_INDEX].as_raw_fd() as u64),
                 EpollEvent::new(EventSet::IN, self.queue_evts[TX_INDEX].as_raw_fd() as u64),
                 EpollEvent::new(
-                    EventSet::IN
-                        | EventSet::OUT
-                        | EventSet::EDGE_TRIGGERED
-                        | EventSet::READ_HANG_UP,
+                    EventSet::IN | EventSet::OUT,
+                    //| EventSet::EDGE_TRIGGERED
+                    //| EventSet::READ_HANG_UP,
                     self.raw_passt_socket_fd() as u64,
                 ),
             ]

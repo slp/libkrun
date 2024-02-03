@@ -139,10 +139,12 @@ impl MmioTransport {
                 "update virtio queue in invalid state 0x{:x}",
                 self.device_status
             );
+            self.with_queue_mut(f);
         }
     }
 
     fn reset(&mut self) {
+        //println!("YYY - reset\n");
         if self.locked_device().is_activated() {
             warn!("reset device while it's still in active state");
         }
@@ -184,7 +186,9 @@ impl MmioTransport {
             DRIVER_OK if self.device_status == (ACKNOWLEDGE | DRIVER | FEATURES_OK) => {
                 self.device_status = status;
                 let device_activated = self.locked_device().is_activated();
-                if !device_activated && self.are_queues_valid() {
+                if !device_activated
+                /*&& self.are_queues_valid()*/
+                {
                     self.locked_device()
                         .activate(self.mem.clone())
                         .expect("Failed to activate device");
@@ -192,11 +196,12 @@ impl MmioTransport {
             }
             _ if (status & FAILED) != 0 => {
                 // TODO: notify backend driver to stop the device
-                self.device_status |= FAILED;
+                //self.device_status |= FAILED;
             }
             _ if status == 0 => {
                 if self.locked_device().is_activated() {
                     let mut device_status = self.device_status;
+                    /*
                     let reset_result = self.locked_device().reset();
                     match reset_result {
                         Some((_interrupt_evt, mut _queue_evts)) => {}
@@ -204,6 +209,7 @@ impl MmioTransport {
                             device_status |= FAILED;
                         }
                     }
+                    */
                     self.device_status = device_status;
                 }
 
@@ -243,7 +249,7 @@ impl BusDevice for MmioTransport {
                     }
                     0x34 => {
                         let val = self.with_queue(0, |q| u32::from(q.get_max_size()));
-                        println!("get_max_size: {}", val);
+                        //println!("get_max_size: {}", val);
                         val
                     }
                     0x44 => self.with_queue(0, |q| q.ready as u32),
@@ -320,10 +326,13 @@ impl BusDevice for MmioTransport {
                     0x24 => self.acked_features_select = v,
                     0x30 => {
                         self.queue_select = v;
-                        println!("queue select: {}", v);
+                        //println!("queue select: {}", v);
                     }
                     0x38 => self.update_queue_field(|q| q.size = v as u16),
-                    0x44 => self.update_queue_field(|q| q.ready = v == 1),
+                    0x44 => {
+                        //println!("queue_ready: {}", v);
+                        self.update_queue_field(|q| q.ready = v == 1)
+                    }
                     0x50 => {
                         if let Some(eventfd) = self.queue_evts.get(&v) {
                             eventfd.write(v as u64).unwrap();
@@ -335,7 +344,10 @@ impl BusDevice for MmioTransport {
                                 .fetch_and(!(v as usize), Ordering::SeqCst);
                         }
                     }
-                    0x70 => self.set_device_status(v),
+                    0x70 => {
+                        //println!("set_device_status: {}", v);
+                        self.set_device_status(v)
+                    }
                     0x80 => self.update_queue_field(|q| lo(&mut q.desc_table, v)),
                     0x84 => self.update_queue_field(|q| hi(&mut q.desc_table, v)),
                     0x90 => self.update_queue_field(|q| lo(&mut q.avail_ring, v)),

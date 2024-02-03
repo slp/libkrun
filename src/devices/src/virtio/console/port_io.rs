@@ -1,21 +1,21 @@
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use libc::{
-    fcntl, EFD_NONBLOCK, F_GETFL, F_SETFL, O_NONBLOCK, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO,
-};
+use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use log::Level;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags};
 use nix::unistd::dup;
 use utils::eventfd::EventFd;
+use utils::eventfd::EFD_NONBLOCK;
+use utils::terminal::Terminal;
 use vm_memory::bitmap::Bitmap;
 use vm_memory::{VolatileMemoryError, VolatileSlice, WriteVolatile};
 
 pub trait PortInput {
     fn read_volatile(&mut self, buf: &mut VolatileSlice) -> Result<usize, io::Error>;
 
-    fn wait_until_readable(&self);
+    fn wait_until_readable(&self, stopfd: Option<&EventFd>);
 }
 
 pub trait PortOutput {
@@ -25,6 +25,7 @@ pub trait PortOutput {
 }
 
 pub fn stdin() -> Result<Box<dyn PortInput + Send>, nix::Error> {
+    std::io::stdin().lock().set_raw_mode().unwrap();
     let fd = dup_raw_fd_into_owned(STDIN_FILENO)?;
     make_non_blocking(&fd)?;
     Ok(Box::new(PortInputFd(fd)))
@@ -71,6 +72,8 @@ impl PortInput for PortInputFd {
         // of `VolatileSlice`.
         let bytes_read = unsafe { libc::read(fd, dst, buf.len()) };
 
+        //println!("read_volatile: bytes_read={}, fd={}", bytes_read, fd);
+
         if bytes_read < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() != ErrorKind::WouldBlock {
@@ -86,8 +89,12 @@ impl PortInput for PortInputFd {
         }
     }
 
-    fn wait_until_readable(&self) {
-        let mut poll_fds = [PollFd::new(self.as_raw_fd(), PollFlags::POLLIN)];
+    fn wait_until_readable(&self, stopfd: Option<&EventFd>) {
+        let mut poll_fds = Vec::new();
+        poll_fds.push(PollFd::new(self.as_raw_fd(), PollFlags::POLLIN));
+        if let Some(stopfd) = stopfd {
+            poll_fds.push(PollFd::new(stopfd.as_raw_fd(), PollFlags::POLLIN));
+        }
         poll(&mut poll_fds, -1).expect("Failed to poll");
     }
 }
@@ -135,6 +142,7 @@ fn make_non_blocking(as_rw_fd: &impl AsRawFd) -> Result<(), nix::Error> {
             return Err(Errno::last());
         }
     }
+    //println!("made non_blocking: fd={}", fd);
     Ok(())
 }
 
@@ -214,7 +222,7 @@ impl PortInput for PortInputSigInt {
         Ok(1)
     }
 
-    fn wait_until_readable(&self) {
+    fn wait_until_readable(&self, stopfd: Option<&EventFd>) {
         let mut poll_fds = [PollFd::new(self.sigint_evt.as_raw_fd(), PollFlags::POLLIN)];
         poll(&mut poll_fds, -1).expect("Failed to poll");
     }

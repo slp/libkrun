@@ -100,6 +100,7 @@ impl<'a> DescriptorChain<'a> {
         index: u16,
     ) -> Option<DescriptorChain> {
         if index >= queue_size {
+            //println!("index ({}) >= queue_size ({})", index, queue_size);
             return None;
         }
 
@@ -309,6 +310,11 @@ impl Queue {
     /// Pop the first available descriptor chain from the avail ring.
     pub fn pop<'b>(&mut self, mem: &'b GuestMemoryMmap) -> Option<DescriptorChain<'b>> {
         if self.len(mem) == 0 {
+            //println!("len == 0");
+            return None;
+        }
+        if (self.actual_size() == 0) {
+            //println!("actual_size == 0");
             return None;
         }
 

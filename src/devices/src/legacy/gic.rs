@@ -105,7 +105,7 @@ impl Gic {
                 continue;
             }
 
-            debug!("signaling irq={} to vcpuid={}", irq_line, vcpuid);
+            //println!("signaling irq={} to vcpuid={}", irq_line, vcpuid);
 
             self.set_irq_common(vcpuid as u8, irq_line);
         }

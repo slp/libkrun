@@ -9,7 +9,7 @@ use std::cmp;
 use std::convert::From;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::os::linux::fs::MetadataExt;
+use std::os::macos::fs::MetadataExt;
 use std::path::PathBuf;
 use std::result;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -207,7 +207,7 @@ impl Block {
             avail_features |= 1u64 << VIRTIO_BLK_F_RO;
         };
 
-        let queue_evts = [EventFd::new(libc::EFD_NONBLOCK)?];
+        let queue_evts = [EventFd::new(utils::eventfd::EFD_NONBLOCK)?];
 
         let queues = QUEUE_SIZES.iter().map(|&s| Queue::new(s)).collect();
 
@@ -220,11 +220,11 @@ impl Block {
             avail_features,
             acked_features: 0u64,
             interrupt_status: Arc::new(AtomicUsize::new(0)),
-            interrupt_evt: EventFd::new(libc::EFD_NONBLOCK)?,
+            interrupt_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)?,
             queue_evts,
             queues,
             device_state: DeviceState::Inactive,
-            activate_evt: EventFd::new(libc::EFD_NONBLOCK)?,
+            activate_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)?,
             intc: None,
             irq_line: None,
         })

@@ -10,7 +10,7 @@ use crate::virtio::device::VirtioDevice;
 
 impl Console {
     pub(crate) fn read_queue_event(&self, queue_index: usize, event: &EpollEvent) -> bool {
-        log::trace!("Event on queue {queue_index}: {:?}", event.event_set());
+        //println!("Event on queue {queue_index}: {:?}", event.event_set());
 
         let event_set = event.event_set();
         if event_set != EventSet::IN {
@@ -30,18 +30,18 @@ impl Console {
         let (direction, port_id) = queue_idx_to_port_id(queue_index);
         match direction {
             QueueDirection::Rx => {
-                log::trace!("Notify rx (queue event)");
+                //println!("Notify rx (queue event)");
                 self.ports[port_id].notify_rx()
             }
             QueueDirection::Tx => {
-                log::trace!("Notify tx (queue event)");
+                //println!("Notify tx (queue event)");
                 self.ports[port_id].notify_tx()
             }
         }
     }
 
     fn handle_activate_event(&self, event_manager: &mut EventManager) {
-        debug!("console: activate event");
+        println!("console: activate event");
         if let Err(e) = self.activate_evt.read() {
             error!("Failed to consume console activate event: {:?}", e);
         }
@@ -53,6 +53,11 @@ impl Console {
             .unwrap();
 
         for queue_index in 0..self.queues.len() {
+            println!(
+                "registering queue: {} fd={}",
+                queue_index,
+                self.queue_events[queue_index].as_raw_fd()
+            );
             event_manager
                 .register(
                     self.queue_events[queue_index].as_raw_fd(),
@@ -93,6 +98,7 @@ impl Console {
     }
 
     fn read_control_queue_event(&mut self, event: &EpollEvent) {
+        //println!("read_control_event");
         let event_set = event.event_set();
         if event_set != EventSet::IN {
             warn!("Unexpected event {:?}", event_set);
@@ -114,6 +120,8 @@ impl Subscriber for Console {
 
         let activate_evt = self.activate_evt.as_raw_fd();
         let sigwinch_evt = self.sigwinch_evt.as_raw_fd();
+
+        //println!("console: process");
 
         if self.is_activated() {
             let mut raise_irq = false;

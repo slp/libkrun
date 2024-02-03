@@ -28,10 +28,11 @@ impl IRQSignaler {
     }
 
     pub fn signal_used_queue(&self, reason: &str) {
-        log::trace!("signal used queue because '{reason}'");
+        //println!("signal used queue because '{reason}'");
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
+            //println!("going with intc: line={}", self.irq_line.unwrap());
             intc.lock().unwrap().set_irq(self.irq_line.unwrap());
         } else if let Err(e) = self.interrupt_evt.write(1) {
             error!("Failed to signal used queue: {e:?}");

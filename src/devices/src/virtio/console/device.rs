@@ -182,7 +182,7 @@ impl Console {
     }
 
     pub(crate) fn process_control_tx(&mut self) -> bool {
-        log::trace!("process_control_tx");
+        //println!("process_control_tx");
         let DeviceState::Activated(ref mem) = self.device_state else {
             unreachable!()
         };
@@ -227,6 +227,8 @@ impl Console {
 
                     if self.ports[cmd.id as usize].is_console() {
                         self.control.mark_console_port(mem, cmd.id);
+                        self.control.port_open(cmd.id, true);
+                        //ports_to_start.push(cmd.id as usize);
                     } else {
                         // We start with all ports open, this makes sense for now,
                         // because underlying file descriptors STDIN, STDOUT, STDERR are always open too
@@ -265,7 +267,9 @@ impl Console {
         }
 
         for port_id in ports_to_start {
-            log::trace!("Starting port io for port {}", port_id);
+            //println!("Starting port io for port {}", port_id);
+            let queue_idx = port_id_to_queue_idx(QueueDirection::Rx, port_id);
+            //println!("Queue {} for port {}", queue_idx, port_id);
             self.ports[port_id].start(
                 mem.clone(),
                 self.queues[port_id_to_queue_idx(QueueDirection::Rx, port_id)].clone(),
@@ -297,10 +301,10 @@ impl VirtioDevice for Console {
     }
 
     fn queues(&self) -> &[VirtQueue] {
-        println!(
-            "console: queues: {}",
-            self.queues.get(0).unwrap().get_max_size()
-        );
+        //println!(
+        //    "console: queues: {}",
+        //    self.queues.get(0).unwrap().get_max_size()
+        //);
         &self.queues
     }
 
@@ -347,6 +351,7 @@ impl VirtioDevice for Console {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+        //println!("YYY - activate");
         if self.activate_evt.write(1).is_err() {
             error!("Cannot write to activate_evt");
             return Err(ActivateError::BadActivate);
