@@ -3,7 +3,7 @@
 
 use std::{io, result};
 pub const MAX_BUFFER_SIZE: usize = 65562;
-pub const QUEUE_SIZE: u16 = 128;
+pub const QUEUE_SIZE: u16 = 8192;
 pub const NUM_QUEUES: usize = 2;
 pub const QUEUE_SIZES: &[u16] = &[QUEUE_SIZE; NUM_QUEUES];
 // The index of the rx queue from Net device queues/queues_evts vector.
@@ -16,6 +16,7 @@ pub mod device;
 pub mod event_handler;
 mod gvproxy;
 mod passt;
+mod worker;
 
 pub use self::device::Net;
 #[derive(Debug)]
