@@ -27,16 +27,6 @@ impl Net {
             }
         };
 
-        // Interest list changes when the device is activated.
-        let interest_list = self.interest_list();
-        for event in interest_list {
-            event_manager
-                .register(event.data() as i32, event, self_subscriber.clone())
-                .unwrap_or_else(|e| {
-                    log::error!("Failed to register net events: {:?}", e);
-                });
-        }
-
         event_manager.unregister(activate_fd).unwrap_or_else(|e| {
             log::error!("Failed to unregister net activate evt: {:?}", e);
         });
@@ -45,6 +35,7 @@ impl Net {
 
 impl Subscriber for Net {
     fn process(&mut self, event: &EpollEvent, evmgr: &mut EventManager) {
+        /*
         let source = event.fd();
         let event_set = event.event_set();
 
@@ -96,9 +87,11 @@ impl Subscriber for Net {
                 source
             );
         }
+        */
     }
 
     fn interest_list(&self) -> Vec<EpollEvent> {
+        /*
         if self.is_activated() {
             vec![
                 EpollEvent::new(EventSet::IN, self.queue_evts[RX_INDEX].as_raw_fd() as u64),
@@ -117,5 +110,10 @@ impl Subscriber for Net {
                 self.activate_evt.as_raw_fd() as u64,
             )]
         }
+        */
+        vec![EpollEvent::new(
+            EventSet::IN,
+            self.activate_evt.as_raw_fd() as u64,
+        )]
     }
 }
