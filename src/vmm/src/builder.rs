@@ -604,7 +604,7 @@ pub fn build_microvm(
         intc.clone(),
     )?;
     #[cfg(feature = "blk")]
-    attach_block_devices(&mut vmm, &vm_resources.block, event_manager, intc.clone())?;
+    attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc.clone())?;
         vmm.kernel_cmdline.insert_str("tsi_hijack")?;
@@ -1314,7 +1314,6 @@ fn attach_balloon_device(
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
-    event_manager: &mut EventManager,
     intc: Option<Arc<Mutex<Gic>>>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1325,10 +1324,6 @@ fn attach_block_devices(
         if let Some(ref intc) = intc {
             block.lock().unwrap().set_intc(intc.clone());
         }
-
-        event_manager
-            .add_subscriber(block.clone())
-            .map_err(RegisterEvent)?;
 
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_mmio_device(
