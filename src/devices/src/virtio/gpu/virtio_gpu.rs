@@ -26,7 +26,7 @@ use rutabaga_gfx::{
 use utils::eventfd::EventFd;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
-use super::super::Queue as VirtQueue;
+use super::super::Queue;
 use super::protocol::GpuResponse::*;
 use super::protocol::{
     GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
@@ -108,7 +108,7 @@ pub struct VirtioGpu {
 impl VirtioGpu {
     fn create_fence_handler(
         mem: GuestMemoryMmap,
-        queue_ctl: Arc<Mutex<VirtQueue>>,
+        queue_ctl: Arc<Mutex<Queue>>,
         fence_state: Arc<Mutex<FenceState>>,
         interrupt_status: Arc<AtomicUsize>,
         interrupt_evt: EventFd,
@@ -121,9 +121,11 @@ impl VirtioGpu {
                 completed_fence.fence_id, completed_fence.ring_idx
             );
 
-            let mut queue = queue_ctl.lock().unwrap();
             let mut fence_state = fence_state.lock().unwrap();
             let mut i = 0;
+            debug!("before lock");
+            let mut queue = queue_ctl.lock().unwrap();
+            debug!("after lock");
 
             let ring = match completed_fence.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX {
                 0 => VirtioGpuRing::Global,
@@ -170,7 +172,7 @@ impl VirtioGpu {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mem: GuestMemoryMmap,
-        queue_ctl: Arc<Mutex<VirtQueue>>,
+        queue_ctl: Arc<Mutex<Queue>>,
         interrupt_status: Arc<AtomicUsize>,
         interrupt_evt: EventFd,
         intc: Option<Arc<Mutex<Gic>>>,
@@ -204,7 +206,7 @@ impl VirtioGpu {
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(
             mem,
-            queue_ctl.clone(),
+            queue_ctl,
             fence_state.clone(),
             interrupt_status,
             interrupt_evt,

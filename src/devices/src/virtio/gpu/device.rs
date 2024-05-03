@@ -1,22 +1,22 @@
 use std::io::Write;
-use std::result;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
-use crossbeam_channel::{unbounded, Sender};
-use utils::eventfd::EventFd;
+use crossbeam_channel::Sender;
+use utils::eventfd::{EventFd, EFD_NONBLOCK};
+use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RING_F_EVENT_IDX};
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
 use super::super::{
     ActivateError, ActivateResult, DeviceState, GpuError, Queue as VirtQueue, VirtioDevice,
-    VirtioShmRegion, VIRTIO_MMIO_INT_VRING,
+    VirtioShmRegion,
 };
 use super::defs;
 use super::defs::uapi;
 use super::defs::uapi::virtio_gpu_config;
-use super::worker::Worker;
+use super::worker::GpuWorker;
 use crate::legacy::Gic;
-use crate::Error as DeviceError;
 #[cfg(target_os = "macos")]
 use hvf::MemoryMapping;
 
@@ -26,15 +26,13 @@ pub(crate) const CTL_INDEX: usize = 0;
 pub(crate) const CUR_INDEX: usize = 1;
 
 // Supported features.
-pub(crate) const AVAIL_FEATURES: u64 = 1u64 << uapi::VIRTIO_F_VERSION_1
+pub(crate) const AVAIL_FEATURES: u64 = 1u64 << VIRTIO_F_VERSION_1
     | 1u64 << uapi::VIRTIO_GPU_F_VIRGL
     | 1u64 << uapi::VIRTIO_GPU_F_RESOURCE_UUID
     | 1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB
     | 1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT;
 
 pub struct Gpu {
-    pub(crate) queue_ctl: Arc<Mutex<VirtQueue>>,
-    pub(crate) queue_cur: Arc<Mutex<VirtQueue>>,
     pub(crate) queues: Vec<VirtQueue>,
     pub(crate) queue_events: Vec<EventFd>,
     pub(crate) avail_features: u64,
@@ -48,6 +46,8 @@ pub struct Gpu {
     irq_line: Option<u32>,
     pub(crate) sender: Option<Sender<u64>>,
     virgl_flags: u32,
+    worker_thread: Option<JoinHandle<()>>,
+    worker_stopfd: EventFd,
     #[cfg(target_os = "macos")]
     map_sender: Sender<MemoryMapping>,
 }
@@ -64,12 +64,7 @@ impl Gpu {
                 .push(EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(GpuError::EventFd)?);
         }
 
-        let queue_ctl = Arc::new(Mutex::new(queues[CTL_INDEX].clone()));
-        let queue_cur = Arc::new(Mutex::new(queues[CUR_INDEX].clone()));
-
         Ok(Gpu {
-            queue_ctl,
-            queue_cur,
             queues,
             queue_events,
             avail_features: AVAIL_FEATURES,
@@ -83,6 +78,8 @@ impl Gpu {
             irq_line: None,
             sender: None,
             virgl_flags,
+            worker_thread: None,
+            worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(GpuError::EventFd)?,
             #[cfg(target_os = "macos")]
             map_sender,
         })
@@ -116,76 +113,6 @@ impl Gpu {
         debug!("virtio_gpu: set_shm_region");
         self.shm_region = Some(shm_region);
     }
-
-    pub fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
-        debug!("gpu: raising IRQ");
-        self.interrupt_status
-            .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-        if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-            Ok(())
-        } else {
-            self.interrupt_evt.write(1).map_err(|e| {
-                error!("Failed to signal used queue: {:?}", e);
-                DeviceError::FailedSignalingUsedQueue(e)
-            })
-        }
-    }
-
-    /*
-    pub fn process_ctl(&mut self) -> bool {
-        debug!("gpu: process_ctl()");
-        let mem = match self.device_state {
-            DeviceState::Activated(ref mem) => mem,
-            // This should never happen, it's been already validated in the event handler.
-            DeviceState::Inactive => unreachable!(),
-        };
-
-        let mut have_used = false;
-
-        //while let Some(head) = self.queues[CTL_INDEX].pop(mem) {
-        if let Some(head) = self.queues[CTL_INDEX].pop(mem) {
-            let index = head.index;
-            let mut written = 0;
-            for desc in head.into_iter() {
-                error!("gpu: process_ctl() unimplemented");
-                self.queues[CTL_INDEX].go_to_previous_position();
-                break;
-            }
-
-            have_used = true;
-            self.queues[CTL_INDEX].add_used(mem, index, written);
-        }
-
-        have_used
-    }
-
-    pub fn process_cur(&mut self) -> bool {
-        debug!("gpu: process_cur()");
-        let mem = match self.device_state {
-            DeviceState::Activated(ref mem) => mem,
-            // This should never happen, it's been already validated in the event handler.
-            DeviceState::Inactive => unreachable!(),
-        };
-
-        let mut have_used = false;
-
-        while let Some(head) = self.queues[CTL_INDEX].pop(mem) {
-            let index = head.index;
-            let mut written = 0;
-            for desc in head.into_iter() {
-                error!("gpu: process_cur() unimplemented");
-                self.queues[CTL_INDEX].go_to_previous_position();
-                break;
-            }
-
-            have_used = true;
-            self.queues[CTL_INDEX].add_used(mem, index, written);
-        }
-
-        have_used
-    }
-    */
 }
 
 impl VirtioDevice for Gpu {
@@ -259,6 +186,10 @@ impl VirtioDevice for Gpu {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+        if self.worker_thread.is_some() {
+            panic!("virtio_fs: worker thread already exists");
+        }
+
         if self.queues.len() != defs::NUM_QUEUES {
             error!(
                 "Cannot perform activate. Expected {} queue(s), got {}",
@@ -268,39 +199,40 @@ impl VirtioDevice for Gpu {
             return Err(ActivateError::BadActivate);
         }
 
+        let event_idx: bool = (self.acked_features & (1 << VIRTIO_RING_F_EVENT_IDX)) != 0;
+        self.queues[CTL_INDEX].set_event_idx(event_idx);
+        self.queues[CUR_INDEX].set_event_idx(event_idx);
+        let queue_ctl = Arc::new(Mutex::new(self.queues[CTL_INDEX].clone()));
+        let queue_cur = Arc::new(Mutex::new(self.queues[CUR_INDEX].clone()));
+
         let shm_region = match self.shm_region.as_ref() {
             Some(s) => s.clone(),
             None => panic!("virtio_gpu: missing SHM region"),
         };
 
-        self.queue_ctl = Arc::new(Mutex::new(self.queues[CTL_INDEX].clone()));
-        self.queue_cur = Arc::new(Mutex::new(self.queues[CUR_INDEX].clone()));
-
-        let (sender, receiver) = unbounded();
-        let worker = Worker::new(
-            receiver,
-            mem.clone(),
-            self.queue_ctl.clone(),
+        let queue_evts = self
+            .queue_events
+            .iter()
+            .map(|e| e.try_clone().unwrap())
+            .collect();
+        let worker = GpuWorker::new(
+            queue_ctl,
+            queue_cur,
+            queue_evts,
             self.interrupt_status.clone(),
             self.interrupt_evt.try_clone().unwrap(),
             self.intc.clone(),
             self.irq_line,
+            mem.clone(),
             shm_region,
             self.virgl_flags,
+            self.worker_stopfd.try_clone().unwrap(),
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
         );
-        worker.run();
-
-        self.sender = Some(sender);
-
-        if self.activate_evt.write(1).is_err() {
-            error!("Cannot write to activate_evt",);
-            return Err(ActivateError::BadActivate);
-        }
+        self.worker_thread = Some(worker.run());
 
         self.device_state = DeviceState::Activated(mem);
-
         Ok(())
     }
 
