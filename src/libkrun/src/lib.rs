@@ -1097,7 +1097,7 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || loop {
         match receiver.recv() {
-            Err(e) => error!("Error in receiver: {:?}", e),
+            Err(e) => {},//error!("Error in receiver: {:?}", e),
             Ok(m) => match m {
                 MemoryMapping::AddMapping(s, h, g, l) => {
                     mapper_vmm.lock().unwrap().add_mapping(s, h, g, l)

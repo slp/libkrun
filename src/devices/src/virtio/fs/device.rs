@@ -8,10 +8,13 @@ use utils::eventfd::{EventFd, EFD_NONBLOCK};
 use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RING_F_EVENT_IDX};
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
+use super::descriptor_utils::{Reader, Writer};
+use super::passthrough::{self, PassthroughFs};
+use super::server::Server;
+
 use super::super::{
     ActivateResult, DeviceState, FsError, Queue as VirtQueue, VirtioDevice, VirtioShmRegion,
 };
-use super::passthrough;
 use super::worker::FsWorker;
 use super::{defs, defs::uapi};
 use crate::legacy::Gic;
@@ -46,9 +49,9 @@ pub struct Fs {
     device_state: DeviceState,
     config: VirtioFsConfig,
     shm_region: Option<VirtioShmRegion>,
-    passthrough_cfg: passthrough::Config,
     worker_thread: Option<JoinHandle<()>>,
     worker_stopfd: EventFd,
+    server: Server<PassthroughFs>,
 }
 
 impl Fs {
@@ -87,9 +90,9 @@ impl Fs {
             device_state: DeviceState::Inactive,
             config,
             shm_region: None,
-            passthrough_cfg: fs_cfg,
             worker_thread: None,
             worker_stopfd: EventFd::new(EFD_NONBLOCK).map_err(FsError::EventFd)?,
+            server: Server::new(PassthroughFs::new(fs_cfg).unwrap()),
         })
     }
 
@@ -111,6 +114,65 @@ impl Fs {
 
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
+    }
+
+    fn handle_event(&mut self, queue_index: usize) {
+        debug!("Fs: queue event: {}", queue_index);
+        let mem = match &self.device_state {
+            DeviceState::Activated(mem) => mem.clone(),
+            DeviceState::Inactive => panic!("invalid device state"),
+        };
+
+        if let Err(e) = self.queue_events[queue_index].read() {
+            error!("Failed to get queue event: {:?}", e);
+        }
+
+        loop {
+            self.queues[queue_index].disable_notification(&mem).unwrap();
+
+            self.process_queue(queue_index);
+
+            if !self.queues[queue_index].enable_notification(&mem).unwrap() {
+                break;
+            }
+        }
+    }
+
+    fn process_queue(&mut self, queue_index: usize) {
+        let mem = match &self.device_state {
+            DeviceState::Activated(mem) => mem,
+            DeviceState::Inactive => panic!("invalid device state"),
+        };
+
+        let queue = &mut self.queues[queue_index];
+        while let Some(head) = queue.pop(&mem) {
+            let reader = Reader::new(&mem, head.clone())
+                .map_err(FsError::QueueReader)
+                .unwrap();
+            let writer = Writer::new(&mem, head.clone())
+                .map_err(FsError::QueueWriter)
+                .unwrap();
+
+            if let Err(e) = self.server.handle_message(reader, writer, None) {
+                error!("error handling message: {:?}", e);
+            }
+
+            if let Err(e) = queue.add_used(&mem, head.index, 0) {
+                error!("failed to add used elements to the queue: {:?}", e);
+            }
+
+            /*
+            if queue.needs_notification(&self.mem).unwrap() {
+                self.interrupt_status
+                    .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
+                if let Some(intc) = &self.intc {
+                    intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+                } else if let Err(e) = self.interrupt_evt.write(1) {
+                    error!("Failed to signal used queue: {:?}", e);
+                }
+            }
+            */
+        }
     }
 }
 
@@ -186,6 +248,7 @@ impl VirtioDevice for Fs {
         self.queues[defs::HPQ_INDEX].set_event_idx(event_idx);
         self.queues[defs::REQ_INDEX].set_event_idx(event_idx);
 
+        /*
         let queue_evts = self
             .queue_events
             .iter()
@@ -203,6 +266,7 @@ impl VirtioDevice for Fs {
             self.worker_stopfd.try_clone().unwrap(),
         );
         self.worker_thread = Some(worker.run());
+        */
 
         self.device_state = DeviceState::Activated(mem);
         Ok(())
@@ -227,6 +291,11 @@ impl VirtioDevice for Fs {
             }
         }
         self.device_state = DeviceState::Inactive;
+        true
+    }
+
+    fn handle_sync(&mut self, queue_idx: u32) -> bool {
+        self.handle_event(queue_idx as usize);
         true
     }
 }

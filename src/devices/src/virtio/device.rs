@@ -123,6 +123,10 @@ pub trait VirtioDevice: AsAny + Send {
     fn shm_region(&self) -> Option<&VirtioShmRegion> {
         None
     }
+
+    fn handle_sync(&mut self, _queue_idx: u32) -> bool {
+        false
+    }
 }
 
 pub trait VmmExitObserver: Send {

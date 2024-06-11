@@ -300,9 +300,11 @@ impl BusDevice for MmioTransport {
                     0x38 => self.update_queue_field(|q| q.size = v as u16),
                     0x44 => self.update_queue_field(|q| q.ready = v == 1),
                     0x50 => {
+                        //if !self.locked_device().handle_sync(v) {
                         if let Some(eventfd) = self.queue_evts.get(&v) {
                             eventfd.write(v as u64).unwrap();
                         }
+                        //}
                     }
                     0x64 => {
                         if self.check_device_status(device_status::DRIVER_OK, 0) {
