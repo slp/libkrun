@@ -1,6 +1,6 @@
 use std::cmp;
 use std::io::Write;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -14,6 +14,7 @@ use super::server::Server;
 
 use super::super::{
     ActivateResult, DeviceState, FsError, Queue as VirtQueue, VirtioDevice, VirtioShmRegion,
+    VIRTIO_MMIO_INT_VRING,
 };
 use super::worker::FsWorker;
 use super::{defs, defs::uapi};
@@ -162,15 +163,15 @@ impl Fs {
             }
 
             /*
-            if queue.needs_notification(&self.mem).unwrap() {
-                self.interrupt_status
-                    .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-                if let Some(intc) = &self.intc {
-                    intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-                } else if let Err(e) = self.interrupt_evt.write(1) {
-                    error!("Failed to signal used queue: {:?}", e);
-                }
+            //if queue.needs_notification(&self.mem).unwrap() {
+            self.interrupt_status
+                .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
+            if let Some(intc) = &self.intc {
+                intc.lock().unwrap().set_irq(self.irq_line.unwrap());
+            } else if let Err(e) = self.interrupt_evt.write(1) {
+                error!("Failed to signal used queue: {:?}", e);
             }
+            //}
             */
         }
     }

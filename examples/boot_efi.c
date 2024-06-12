@@ -202,7 +202,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 2, 4096)) {
+    if (err = krun_set_vm_config(ctx_id, 6, 8192)) {
         errno = -err;
         perror("Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
@@ -213,6 +213,16 @@ int main(int argc, char *const argv[])
         perror("Error configuring disk image");
         return -1;
     }
+
+    uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_DRM |
+            VIRGLRENDERER_THREAD_SYNC | VIRGLRENDERER_USE_ASYNC_FENCE_CB;
+    if (err = krun_set_gpu_options(ctx_id, virgl_flags)) {
+        errno = -err;
+        perror("Error configuring gpu");
+        return -1;
+    }
+
+    krun_add_virtiofs(ctx_id, "test", "/Users/slopezpa/test");
 
     int passt_fd = connect_to_passt(cmdline.passt_socket_path);
 
