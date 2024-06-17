@@ -74,7 +74,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
     #[allow(clippy::cognitive_complexity)]
     pub fn handle_message(
-        &self,
+        &mut self,
         mut r: Reader,
         w: Writer,
         shm_region: Option<&VirtioShmRegion>,
@@ -479,7 +479,7 @@ impl<F: FileSystem + Sync> Server<F> {
         }
     }
 
-    fn open(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
+    fn open(&mut self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let OpenIn { flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
         match self
@@ -526,6 +526,16 @@ impl<F: FileSystem + Sync> Server<F> {
 
         // Split the writer into 2 pieces: one for the `OutHeader` and the rest for the data.
         let data_writer = ZCWriter(w.split_at(size_of::<OutHeader>()).unwrap());
+
+        /*
+        let out = OutHeader {
+            len: (size_of::<OutHeader>() + size as usize) as u32,
+            error: 0,
+            unique: in_header.unique,
+        };
+
+        w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
+        */
 
         match self.fs.read(
             Context::from(in_header),
@@ -897,7 +907,7 @@ impl<F: FileSystem + Sync> Server<F> {
         }
     }
 
-    fn opendir(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
+    fn opendir(&mut self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let OpenIn { flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
         match self

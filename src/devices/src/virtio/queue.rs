@@ -29,6 +29,7 @@ pub(crate) const VIRTQ_AVAIL_ELEMENT_SIZE: u64 = 2;
 
 pub(super) const VIRTQ_DESC_F_NEXT: u16 = 0x1;
 pub(super) const VIRTQ_DESC_F_WRITE: u16 = 0x2;
+pub(super) const VIRTQ_DESC_F_INDIRECT: u16 = 0x4;
 
 /// Virtio Queue related errors.
 #[allow(clippy::enum_variant_names)]
@@ -279,6 +280,42 @@ impl<'a> DescriptorChain<'a> {
         }
     }
 
+    pub fn new_from_indirect(&self) -> Option<DescriptorChain> {
+        if !self.is_indirect() {
+            return None;
+            //return Err(Error::InvalidIndirectDescriptor);
+        }
+
+        let desc_head = self.addr;
+        //self.mem
+        //    .checked_offset(desc_head, 16)
+        //    .ok_or(Error::GuestMemoryError)?;
+
+        // These reads can't fail unless Guest memory is hopelessly broken.
+        let desc = match self.mem.read_obj::<Descriptor>(desc_head) {
+            Ok(ret) => ret,
+            Err(_) => return None,
+        };
+
+        let chain = DescriptorChain {
+            mem: self.mem,
+            desc_table: self.addr,
+            queue_size: (self.len / 16).try_into().unwrap(),
+            ttl: (self.len / 16).try_into().unwrap(),
+            index: 0,
+            addr: GuestAddress(desc.addr),
+            len: desc.len,
+            flags: desc.flags,
+            next: desc.next,
+        };
+
+        if !chain.is_valid() {
+            return None;
+        }
+
+        Some(chain)
+    }
+
     fn is_valid(&self) -> bool {
         !self.has_next() || self.next < self.queue_size
     }
@@ -294,6 +331,10 @@ impl<'a> DescriptorChain<'a> {
     /// Write only means the the emulated device can write and the driver can read.
     pub fn is_write_only(&self) -> bool {
         self.flags & VIRTQ_DESC_F_WRITE != 0
+    }
+
+    pub fn is_indirect(&self) -> bool {
+        self.flags & VIRTQ_DESC_F_INDIRECT != 0
     }
 
     /// If the driver designated this as a read only descriptor.

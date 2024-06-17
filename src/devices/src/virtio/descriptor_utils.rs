@@ -190,6 +190,12 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     /// Construct a new Reader wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Reader<'a>> {
+        let chain = if chain.is_indirect() {
+            //error!("Reader: is_indirect");
+            chain.new_from_indirect().unwrap()
+        } else {
+            chain
+        };
         let mut total_len: usize = 0;
         let buffers = chain
             .into_iter()
@@ -342,6 +348,12 @@ pub struct Writer<'a> {
 impl<'a> Writer<'a> {
     /// Construct a new Writer wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Writer<'a>> {
+        let chain = if chain.is_indirect() {
+            //error!("Writer: is_indirect");
+            chain.new_from_indirect().unwrap()
+        } else {
+            chain
+        };
         let mut total_len: usize = 0;
         let buffers = chain
             .into_iter()

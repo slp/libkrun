@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
+use std::io::Write;
 #[cfg(not(feature = "efi"))]
 use std::mem;
 use std::mem::MaybeUninit;
@@ -18,6 +19,7 @@ use std::time::Duration;
 
 use vm_memory::ByteValued;
 
+use crate::virtio::descriptor_utils::Writer;
 use crate::virtio::fs::filesystem::SecContext;
 
 use super::super::super::linux_errno::{linux_error, LINUX_ERANGE};
@@ -33,7 +35,7 @@ const XATTR_KEY: &[u8] = b"user.containers.override_stat\0";
 
 const UID_MAX: u32 = u32::MAX - 1;
 
-#[cfg(not(feature = "efi"))]
+//#[cfg(not(feature = "efi"))]
 static INIT_BINARY: &[u8] = include_bytes!("../../../../../../init/init");
 
 type Inode = u64;
@@ -391,7 +393,7 @@ impl Default for Config {
             cache_policy: Default::default(),
             writeback: false,
             root_dir: String::from("/"),
-            xattr: true,
+            xattr: false,
             proc_sfd_rawfd: None,
         }
     }
@@ -415,6 +417,8 @@ pub struct PassthroughFs {
     // `cfg.writeback` is true and `init` was called with `FsOptions::WRITEBACK_CACHE`.
     writeback: AtomicBool,
     cfg: Config,
+
+    test_file: Option<File>,
 }
 
 impl PassthroughFs {
@@ -448,6 +452,7 @@ impl PassthroughFs {
 
             writeback: AtomicBool::new(false),
             cfg,
+            test_file: None,
         })
     }
 
@@ -482,7 +487,7 @@ impl PassthroughFs {
         Ok(cstr)
     }
 
-    fn open_inode(&self, inode: Inode, mut flags: i32) -> io::Result<File> {
+    fn open_inode(&mut self, inode: Inode, mut flags: i32) -> io::Result<File> {
         // When writeback caching is enabled, the kernel may send read requests even if the
         // userspace program opened the file write-only. So we need to ensure that we have opened
         // the file for reading as well as writing.
@@ -513,6 +518,13 @@ impl PassthroughFs {
         if fd < 0 {
             return Err(linux_error(io::Error::last_os_error()));
         }
+
+        /*
+        let file = unsafe { File::from_raw_fd(fd) };
+        if inode == 7889232 {
+            self.test_file = Some(file.try_clone().unwrap());
+        }
+        */
 
         // Safe because we just opened this fd.
         Ok(unsafe { File::from_raw_fd(fd) })
@@ -631,7 +643,7 @@ impl PassthroughFs {
         Ok(())
     }
 
-    fn do_open(&self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
+    fn do_open(&mut self, inode: Inode, flags: u32) -> io::Result<(Option<Handle>, OpenOptions)> {
         let flags = self.parse_open_flags(flags as i32);
 
         let file = RwLock::new(self.open_inode(inode, flags)?);
@@ -841,7 +853,7 @@ impl FileSystem for PassthroughFs {
     fn batch_forget(&self, _ctx: Context, _requests: Vec<(Inode, u64)>) {}
 
     fn opendir(
-        &self,
+        &mut self,
         _ctx: Context,
         inode: Inode,
         flags: u32,
@@ -949,7 +961,7 @@ impl FileSystem for PassthroughFs {
     }
 
     fn open(
-        &self,
+        &mut self,
         _ctx: Context,
         inode: Inode,
         flags: u32,
@@ -1069,6 +1081,13 @@ impl FileSystem for PassthroughFs {
             return w.write(&INIT_BINARY[offset as usize..(offset + (size as u64)) as usize]);
         }
 
+        if inode == 7889232 {
+            if let Some(file) = self.test_file.as_ref() {
+                //error!("using test_file");
+                return w.write_from(file, size as usize, offset);
+            }
+        }
+
         let data = self
             .handles
             .read()
@@ -1077,6 +1096,22 @@ impl FileSystem for PassthroughFs {
             .filter(|hd| hd.inode == inode)
             .cloned()
             .ok_or_else(ebadf)?;
+
+        /*
+        match data.file.read() {
+            Ok(f) => {
+                if inode == 7889232 {
+                    let _ = w.write_all(&INIT_BINARY[0..(size as u64) as usize]);
+                    return Ok(size as usize);
+                    //return w.write_from(&f, size as usize, offset);
+                    //return Ok(size as usize);
+                } else {
+                    error!("XXX - preadv");
+                }
+            }
+            Err(_) => {}
+        }
+        */
 
         // This is safe because write_from uses preadv64, so the underlying file descriptor
         // offset is not affected by this operation.
@@ -1181,6 +1216,7 @@ impl FileSystem for PassthroughFs {
             set_xattr_stat(StatFile::Path(&c_path), Some((uid, gid)), None)?;
         }
 
+        /*
         if valid.contains(SetattrValid::SIZE) {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = match data {
@@ -1195,6 +1231,7 @@ impl FileSystem for PassthroughFs {
                 return Err(linux_error(io::Error::last_os_error()));
             }
         }
+        */
 
         if valid.intersects(SetattrValid::ATIME | SetattrValid::MTIME) {
             let mut tvs = [

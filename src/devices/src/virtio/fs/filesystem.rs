@@ -9,6 +9,8 @@ use std::io;
 use std::mem;
 use std::time::Duration;
 
+use crate::virtio::descriptor_utils::Writer;
+
 use super::bindings;
 use super::fuse;
 
@@ -625,7 +627,7 @@ pub trait FileSystem {
     /// will be interpreted by the kernel as success and future calls to `open` and `release` will
     /// be handled by the kernel without being passed on to the file system.
     fn open(
-        &self,
+        &mut self,
         ctx: Context,
         inode: Self::Inode,
         flags: u32,
@@ -933,7 +935,7 @@ pub trait FileSystem {
     /// will be interpreted by the kernel as success and future calls to `opendir` and `releasedir`
     /// will be handled by the kernel without being passed on to the file system.
     fn opendir(
-        &self,
+        &mut self,
         ctx: Context,
         inode: Self::Inode,
         flags: u32,

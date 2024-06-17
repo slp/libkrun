@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use utils::eventfd::{EventFd, EFD_NONBLOCK};
+use virtio_bindings::virtio_ring::VIRTIO_RING_F_INDIRECT_DESC;
 use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RING_F_EVENT_IDX};
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
@@ -67,7 +68,9 @@ impl Fs {
                 .push(EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(FsError::EventFd)?);
         }
 
-        let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+        let avail_features = (1u64 << VIRTIO_F_VERSION_1)
+            //| (1u64 << VIRTIO_RING_F_EVENT_IDX)
+            | (1u64 << VIRTIO_RING_F_INDIRECT_DESC);
 
         let tag = fs_id.into_bytes();
         let mut config = VirtioFsConfig::default();
@@ -119,24 +122,24 @@ impl Fs {
 
     fn handle_event(&mut self, queue_index: usize) {
         debug!("Fs: queue event: {}", queue_index);
-        let mem = match &self.device_state {
-            DeviceState::Activated(mem) => mem.clone(),
-            DeviceState::Inactive => panic!("invalid device state"),
-        };
+        //let mem = match &self.device_state {
+        //    DeviceState::Activated(mem) => mem.clone(),
+        //    DeviceState::Inactive => panic!("invalid device state"),
+        //};
 
-        if let Err(e) = self.queue_events[queue_index].read() {
-            error!("Failed to get queue event: {:?}", e);
-        }
+        //if let Err(e) = self.queue_events[queue_index].read() {
+        //   error!("Failed to get queue event: {:?}", e);
+        //}
 
-        loop {
-            self.queues[queue_index].disable_notification(&mem).unwrap();
+        //loop {
+        //self.queues[queue_index].disable_notification(&mem).unwrap();
 
-            self.process_queue(queue_index);
+        self.process_queue(queue_index);
 
-            if !self.queues[queue_index].enable_notification(&mem).unwrap() {
-                break;
-            }
-        }
+        //if !self.queues[queue_index].enable_notification(&mem).unwrap() {
+        //    break;
+        //}
+        //}
     }
 
     fn process_queue(&mut self, queue_index: usize) {
