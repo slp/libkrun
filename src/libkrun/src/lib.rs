@@ -66,6 +66,7 @@ enum NetworkConfig {
     Tsi(TsiConfig),
     VirtioNetPasst(RawFd),
     VirtioNetGvproxy(PathBuf),
+    VirtioNetTap(RawFd),
 }
 
 impl Default for NetworkConfig {
@@ -197,6 +198,7 @@ impl ContextConfig {
             }
             NetworkConfig::VirtioNetPasst(_) => Err(()),
             NetworkConfig::VirtioNetGvproxy(_) => Err(()),
+            NetworkConfig::VirtioNetTap(_) => Err(()),
         }
     }
 
@@ -545,6 +547,27 @@ pub unsafe extern "C" fn krun_set_gvproxy_path(ctx_id: u32, c_path: *const c_cha
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_net_cfg(NetworkConfig::VirtioNetGvproxy(path));
+        }
+        Entry::Vacant(_) => return -libc::ENOENT,
+    }
+    KRUN_SUCCESS
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[no_mangle]
+pub unsafe extern "C" fn krun_set_tap_fd(ctx_id: u32, fd: c_int) -> i32 {
+    if fd < 0 {
+        return -libc::EINVAL;
+    }
+
+    if cfg!(not(feature = "net")) {
+        return -libc::ENOTSUP;
+    }
+
+    match CTX_MAP.lock().unwrap().entry(ctx_id) {
+        Entry::Occupied(mut ctx_cfg) => {
+            let cfg = ctx_cfg.get_mut();
+            cfg.set_net_cfg(NetworkConfig::VirtioNetTap(fd));
         }
         Entry::Vacant(_) => return -libc::ENOENT,
     }
@@ -1054,6 +1077,13 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
             #[cfg(feature = "net")]
             {
                 let backend = VirtioNetBackend::Gvproxy(_path.clone());
+                create_virtio_net(&mut ctx_cfg, backend);
+            }
+        }
+        NetworkConfig::VirtioNetTap(_fd) => {
+            #[cfg(feature = "net")]
+            {
+                let backend = VirtioNetBackend::Tap(_fd);
                 create_virtio_net(&mut ctx_cfg, backend);
             }
         }
