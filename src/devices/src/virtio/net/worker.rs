@@ -64,7 +64,7 @@ impl NetWorker {
         mem: GuestMemoryMmap,
         cfg_backend: VirtioNetBackend,
     ) -> Self {
-        println!("NetWorker");
+        println!("NetWorker: vnet_hdr={}", vnet_hdr_len());
         let backend = match cfg_backend {
             VirtioNetBackend::Passt(fd) => Box::new(Passt::new(fd)) as Box<dyn NetBackend + Send>,
             VirtioNetBackend::Gvproxy(path) => {
@@ -470,8 +470,9 @@ impl NetWorker {
     /// Fills self.rx_frame_buf with an ethernet frame from backend and prepends virtio_net_hdr to it
     fn read_into_rx_frame_buf_from_backend(&mut self) -> result::Result<(), ReadError> {
         let mut len = 0;
-        len += write_virtio_net_hdr(&mut self.rx_frame_buf);
-        len += self.backend.read_frame(&mut self.rx_frame_buf[len..])?;
+        //len += write_virtio_net_hdr(&mut self.rx_frame_buf);
+        //len += self.backend.read_frame(&mut self.rx_frame_buf[len..])?;
+        len += self.backend.read_frame(&mut self.rx_frame_buf)?;
         self.rx_frame_buf_len = len;
         Ok(())
     }

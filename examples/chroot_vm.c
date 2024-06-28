@@ -159,13 +159,20 @@ int connect_to_passt()
      *
      *        IFF_NO_PI - Do not provide packet information
      */
-    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
     strncpy(ifr.ifr_name, "tap0", IFNAMSIZ);
 
     err = ioctl(fd, TUNSETIFF, (void *) &ifr);
     if (err < 0){
         perror("Failed to create tap0 device");
         return -1;
+    }
+
+    int len = 12;
+    err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+    if (err != 0) {
+   	 perror("ioctl(TUNSETVNETHDRSZ)");
+	 return -1;
     }
 
     return fd;
@@ -310,6 +317,8 @@ int main(int argc, char *const argv[])
             return -1;
         }
     }
+
+    krun_add_vsock_port(ctx_id, 4444, "/tmp/zone2.sock");
 
     // Configure the rlimits that will be set in the guest
     if (err = krun_set_rlimits(ctx_id, &rlimits[0])) {
