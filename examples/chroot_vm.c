@@ -12,11 +12,15 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <libkrun.h>
 #include <getopt.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
 
 #define MAX_ARGS_LEN 4096
 #ifndef MAX_PATH
@@ -121,6 +125,7 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
 
 int connect_to_passt()
 {
+    /*
     struct sockaddr_un addr;
     int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (socket_fd < 0) {
@@ -138,6 +143,32 @@ int connect_to_passt()
     }
 
     return socket_fd;
+    */
+
+    struct ifreq ifr;
+    int fd, err;
+
+    fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0)
+        return fd;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
+     *        IFF_TAP   - TAP device
+     *
+     *        IFF_NO_PI - Do not provide packet information
+     */
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    strncpy(ifr.ifr_name, "tap0", IFNAMSIZ);
+
+    err = ioctl(fd, TUNSETIFF, (void *) &ifr);
+    if (err < 0){
+        perror("Failed to create tap0 device");
+        return -1;
+    }
+
+    return fd;
 }
 
 int start_passt()
@@ -267,13 +298,13 @@ int main(int argc, char *const argv[])
             return -1;
         }
     } else {
-        int passt_fd = cmdline.passt_socket_path ? connect_to_passt(cmdline.passt_socket_path) : start_passt();
+        int passt_fd = connect_to_passt(cmdline.passt_socket_path);
 
         if (passt_fd < 0) {
             return -1;
         }
 
-        if (err = krun_set_passt_fd(ctx_id, passt_fd)) {
+        if (err = krun_set_tap_fd(ctx_id, passt_fd)) {
             errno = -err;
             perror("Error configuring net mode");
             return -1;

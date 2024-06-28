@@ -64,6 +64,7 @@ impl NetWorker {
         mem: GuestMemoryMmap,
         cfg_backend: VirtioNetBackend,
     ) -> Self {
+        println!("NetWorker");
         let backend = match cfg_backend {
             VirtioNetBackend::Passt(fd) => Box::new(Passt::new(fd)) as Box<dyn NetBackend + Send>,
             VirtioNetBackend::Gvproxy(path) => {

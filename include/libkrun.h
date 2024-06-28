@@ -155,6 +155,7 @@ int32_t krun_set_passt_fd(uint32_t ctx_id, int fd);
  *  Zero on success or a negative error number on failure.
  */
 int32_t krun_set_gvproxy_path(uint32_t ctx_id, char* c_path);
+int32_t krun_set_tap_fd(uint32_t ctx_id, int fd);
 
 /**
  * Sets the MAC address for the virtio-net device when using the passt backend.

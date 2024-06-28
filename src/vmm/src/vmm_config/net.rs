@@ -66,6 +66,7 @@ impl NetBuilder {
     /// Builds a network device based on a network interface config. Keeps a device reference
     /// in the builder's internal list.
     pub fn build(&mut self, netif_config: NetworkInterfaceConfig) -> Result<Arc<Mutex<Net>>> {
+        println!("NET build");
         // If this is an update, just remove the old one.
         if let Some(index) = self
             .net_devices
@@ -84,6 +85,7 @@ impl NetBuilder {
 
     /// Creates a Net device from a NetworkInterfaceConfig.
     pub fn create_net(cfg: NetworkInterfaceConfig) -> Result<Net> {
+        println!("create_net");
         // Create and return the Net device
         Net::new(cfg.iface_id, cfg.backend, cfg.mac)
             .map_err(NetworkInterfaceError::CreateNetworkDevice)
