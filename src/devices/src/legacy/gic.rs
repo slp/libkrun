@@ -6,14 +6,14 @@ use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
-use arch::aarch64::gicv2::GICv2;
+//use arch::aarch64::gicv2::GICv2;
 use arch::aarch64::layout::GTIMER_VIRT;
-use hvf::{vcpu_request_exit, vcpu_set_vtimer_mask};
+use hvf::{gic_set_spi, vcpu_request_exit, vcpu_set_vtimer_mask};
 
 use crate::bus::BusDevice;
 
 const IRQ_NUM: u32 = 64;
-const MAX_CPUS: u64 = 8;
+const MAX_CPUS: u64 = 16;
 
 enum VcpuStatus {
     Running,
@@ -55,6 +55,8 @@ impl VcpuList {
     }
 
     fn set_irq_common(&self, vcpuid: u8, irq_line: u32) {
+        gic_set_spi(irq_line);
+        /*
         let vcpu = &mut self.vcpus[vcpuid as usize].lock().unwrap();
         vcpu.pending_irqs.push_back(irq_line);
 
@@ -71,6 +73,7 @@ impl VcpuList {
                 vcpu_request_exit(vcpuid as u64).unwrap();
             }
         }
+        */
     }
 
     pub fn set_vtimer_irq(&self, vcpuid: u64) {
@@ -120,7 +123,8 @@ pub struct Gic {
 impl Gic {
     pub fn new(vcpu_list: Arc<VcpuList>) -> Self {
         Self {
-            cpu_size: GICv2::get_cpu_size(),
+            //cpu_size: GICv2::get_cpu_size(),
+            cpu_size: 0,
             ctlr: 0,
             irq_cfg: [0; IRQ_NUM as usize],
             vcpu_list,
@@ -133,12 +137,14 @@ impl Gic {
     /// Get the address of the GICv2 distributor + CPU interface.
     pub const fn get_addr() -> u64 {
         // The CPU interface mapping starts before the distributor, so use it here.
-        GICv2::get_cpu_addr()
+        //GICv2::get_cpu_addr()
+        0
     }
 
     /// Get the size of the GICv2 distributor + CPU interface.
     pub const fn get_size() -> u64 {
-        GICv2::get_dist_size() + GICv2::get_cpu_size()
+        //GICv2::get_dist_size() + GICv2::get_cpu_size()
+        0
     }
 
     pub fn add_vcpu(&mut self) {
@@ -151,10 +157,13 @@ impl Gic {
     }
 
     pub fn set_irq(&self, irq_line: u32) {
+        //println!("set_irq: {irq_line}");
         for vcpuid in 0..self.vcpu_count {
+            /*
             if (self.irq_target[irq_line as usize] & (1 << vcpuid)) == 0 {
                 continue;
             }
+            */
 
             debug!("signaling irq={} to vcpuid={}", irq_line, vcpuid);
             self.vcpu_list.set_irq_common(vcpuid, irq_line);

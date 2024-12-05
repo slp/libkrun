@@ -202,7 +202,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 2, 1024)) {
+    if (err = krun_set_vm_config(ctx_id, 1, 1024)) {
         errno = -err;
         perror("Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
@@ -214,6 +214,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
+#if 1
     int passt_fd = connect_to_passt(cmdline.passt_socket_path);
 
     if (passt_fd < 0) {
@@ -225,6 +226,7 @@ int main(int argc, char *const argv[])
       perror("Error configuring net mode");
       return -1;
     }
+#endif
 
     int efd = krun_get_shutdown_eventfd(ctx_id);
     if (efd < 0) {

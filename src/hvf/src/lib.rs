@@ -132,6 +132,15 @@ pub enum InterruptType {
     Fiq,
 }
 
+pub fn gic_set_spi(spi: u32) {
+    let ret = unsafe { hv_gic_set_spi(spi, true) };
+    if ret != HV_SUCCESS {
+        println!("set_spi error");
+    } else {
+        //println!("set_spi OK");
+    }
+}
+
 pub fn vcpu_request_exit(vcpuid: u64) -> Result<(), Error> {
     let mut vcpu: u64 = vcpuid;
     let ret = unsafe { hv_vcpus_exit(&mut vcpu, 1) };
@@ -176,12 +185,59 @@ pub struct HvfVm {}
 
 impl HvfVm {
     pub fn new() -> Result<Self, Error> {
+        const MAPPED_IO_START: usize = 1 << 30;
+
         let ret = unsafe { hv_vm_create(std::ptr::null_mut()) };
         if ret != HV_SUCCESS {
-            Err(Error::VmCreate)
-        } else {
-            Ok(Self {})
+            return Err(Error::VmCreate);
         }
+        println!("create");
+
+        let mut dist_size: usize = 0;
+        let ret = unsafe { hv_gic_get_distributor_size(&mut dist_size) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after set_dist: {}", dist_size);
+
+        let mut redist_size: usize = 0;
+        let ret = unsafe { hv_gic_get_redistributor_size(&mut redist_size) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after set_redist: {}", redist_size);
+
+        let gic_config = unsafe { hv_gic_config_create() };
+        let ret = unsafe {
+            hv_gic_config_set_distributor_base(
+                gic_config,
+                (MAPPED_IO_START - dist_size - redist_size * 16) as u64,
+            )
+        };
+        //unsafe { hv_gic_config_set_distributor_base(gic_config, MAPPED_IO_START - DIST_SIZE) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after set_distrib");
+
+        let ret = unsafe {
+            hv_gic_config_set_redistributor_base(
+                gic_config,
+                (MAPPED_IO_START - redist_size * 16) as u64,
+            )
+        };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after set_redistrib");
+
+        let ret = unsafe { hv_gic_create(gic_config) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after set_config");
+
+        Ok(Self {})
     }
 
     pub fn map_memory(
@@ -194,7 +250,7 @@ impl HvfVm {
             hv_vm_map(
                 host_start_addr as *mut core::ffi::c_void,
                 guest_start_addr,
-                size,
+                size.try_into().unwrap(),
                 (HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC).into(),
             )
         };
@@ -206,7 +262,7 @@ impl HvfVm {
     }
 
     pub fn unmap_memory(&self, guest_start_addr: u64, size: u64) -> Result<(), Error> {
-        let ret = unsafe { hv_vm_unmap(guest_start_addr, size) };
+        let ret = unsafe { hv_vm_unmap(guest_start_addr, size.try_into().unwrap()) };
         if ret != HV_SUCCESS {
             Err(Error::MemoryUnmap)
         } else {
@@ -248,7 +304,7 @@ pub struct HvfVcpu<'a> {
 }
 
 impl<'a> HvfVcpu<'a> {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new(cpuid: u64) -> Result<Self, Error> {
         let mut vcpuid: hv_vcpu_t = 0;
         let vcpu_exit_ptr: *mut hv_vcpu_exit_t = std::ptr::null_mut();
         let cntfrq: u64 = 24000000;
@@ -266,6 +322,25 @@ impl<'a> HvfVcpu<'a> {
         if ret != HV_SUCCESS {
             return Err(Error::VcpuCreate);
         }
+
+        println!("hvfcpu id={vcpuid}");
+        let mut mpidr = cpuid << 8; // | vcpuid << 8;
+                                    //mpidr |= (vcpuid >> 4) & 0xff) << 8;
+                                    //mpidr |= (vcpuid >> 12) & 0xff) << 16;
+                                    //mpidr |= (vcpuid & 0x0f) << 8;
+                                    //mpidr |= (vcpuid & 0x0f) << 16;
+                                    //mpidr |= 1 << 31;
+        let ret = unsafe { hv_vcpu_set_sys_reg(vcpuid, hv_sys_reg_t_HV_SYS_REG_MPIDR_EL1, mpidr) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VcpuSetSystemRegister);
+        }
+
+        let mut redist_addr: u64 = 0;
+        let ret = unsafe { hv_gic_get_redistributor_base(vcpuid, &mut redist_addr) };
+        if ret != HV_SUCCESS {
+            return Err(Error::VmCreate);
+        }
+        println!("after get_redist_addr: {}", redist_addr);
 
         let vcpu_exit: &hv_vcpu_exit_t = unsafe { vcpu_exit_ptr.as_mut().unwrap() };
 

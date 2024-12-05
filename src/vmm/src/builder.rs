@@ -486,13 +486,14 @@ pub fn build_microvm(
 
     // On x86_64 always create a serial device,
     // while on aarch64 only create it if 'console=' is specified in the boot args.
-    let serial_device = if cfg!(feature = "efi") {
+    let serial_device = if true {
+        //cfg!(feature = "efi") {
         Some(setup_serial_device(
             event_manager,
             None,
-            None,
+            //None,
             // Uncomment this to get EFI output when debugging EDK2.
-            // Some(Box::new(io::stdout())),
+            Some(Box::new(io::stdout())),
         )?)
     } else {
         None
@@ -1049,10 +1050,12 @@ fn attach_legacy_devices(
         .map_err(Error::RegisterMMIODevice)
         .map_err(StartMicrovmError::Internal)?;
 
+    /*
     mmio_device_manager
         .register_mmio_gic(vm, intc.clone())
         .map_err(Error::RegisterMMIODevice)
         .map_err(StartMicrovmError::Internal)?;
+    */
 
     if let Some(shutdown_efd) = shutdown_efd {
         mmio_device_manager
@@ -1129,7 +1132,8 @@ fn create_vcpus_aarch64(
     vcpu_list: Arc<VcpuList>,
 ) -> super::Result<Vec<Vcpu>> {
     let mut vcpus = Vec::with_capacity(vcpu_config.vcpu_count as usize);
-    let mut boot_senders = Vec::with_capacity(vcpu_config.vcpu_count as usize - 1);
+    let mut boot_senders: Vec<Sender<u64>> =
+        Vec::with_capacity(vcpu_config.vcpu_count as usize - 1);
 
     for cpu_index in 0..vcpu_config.vcpu_count {
         let boot_receiver = if cpu_index != 0 {

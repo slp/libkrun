@@ -221,10 +221,12 @@ fn create_gic_node(fdt: &mut FdtWriter, gic_device: &Box<dyn GICDevice>) -> Resu
     // is required.
     fdt.property_u32("#interrupt-cells", 3)?;
     fdt.property("reg", &gic_reg_prop)?;
+    //fdt.property_u32("#redistributor-regions", 1)?;
     fdt.property_u32("phandle", GIC_PHANDLE)?;
     fdt.property_u32("#address-cells", 2)?;
     fdt.property_u32("#size-cells", 2)?;
     fdt.property_null("ranges")?;
+    /*
     let gic_intr = [
         GIC_FDT_IRQ_TYPE_PPI,
         gic_device.fdt_maint_irq(),
@@ -233,6 +235,7 @@ fn create_gic_node(fdt: &mut FdtWriter, gic_device: &Box<dyn GICDevice>) -> Resu
     let gic_intr_prop = generate_prop32(&gic_intr);
 
     fdt.property("interrupts", &gic_intr_prop)?;
+    */
     fdt.end_node(intc_node)?;
 
     Ok(())
