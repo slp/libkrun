@@ -85,6 +85,8 @@ pub struct VmResources {
     pub boot_config: BootSourceConfig,
     /// The parameters for the kernel bundle to be loaded in this microVM.
     pub kernel_bundle: Option<KernelBundle>,
+    /// The path to an external kernel, as an alternative to KernelBundle.
+    pub external_kernel: Option<PathBuf>,
     /// The parameters for the qboot bundle to be loaded in this microVM.
     #[cfg(feature = "tee")]
     pub qboot_bundle: Option<QbootBundle>,
@@ -201,6 +203,14 @@ impl VmResources {
 
         self.kernel_bundle = Some(kernel_bundle);
         Ok(())
+    }
+
+    pub fn external_kernel(&self) -> Option<&PathBuf> {
+        self.external_kernel.as_ref()
+    }
+
+    pub fn set_external_kernel(&mut self, path: PathBuf) {
+        self.external_kernel = Some(path);
     }
 
     #[cfg(feature = "tee")]
