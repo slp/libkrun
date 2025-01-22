@@ -830,6 +830,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-loader"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "870c3814345f050991f99869417779f6062542bcf4ed81db7a1b926ad1306638"
+dependencies = [
+ "vm-memory",
+]
+
+[[package]]
 name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1594,12 +1603,14 @@ dependencies = [
  "curl",
  "devices",
  "env_logger",
+ "flate2",
  "hvf",
  "kbs-types",
  "kernel",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "linux-loader",
  "log",
  "nix 0.24.3",
  "polly",

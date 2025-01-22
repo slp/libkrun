@@ -7,7 +7,7 @@
 use crossbeam_channel::{unbounded, Sender};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -19,6 +19,7 @@ use super::{Error, Vmm};
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use crate::resources::VmResources;
+use crate::vmm_config::external_kernel::{ExternalKernel, ExternalKernelFormat};
 //use crate::vmm_config::kernel_bundle::{InitrdBundle, KernelBundle, QbootBundle};
 use devices::legacy::GicV3;
 use devices::legacy::Serial;
@@ -57,13 +58,15 @@ use arch::InitrdConfig;
 use device_manager::shm::ShmManager;
 #[cfg(not(feature = "tee"))]
 use devices::virtio::{fs::ExportTable, VirtioShmRegion};
+use flate2::read::GzDecoder;
 #[cfg(feature = "tee")]
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use linux_loader::loader::{self, KernelLoader};
 use nix::unistd::isatty;
 use polly::event_manager::{Error as EventManagerError, EventManager};
 use utils::eventfd::EventFd;
-#[cfg(all(not(feature = "efi"), not(feature = "tee")))]
+#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
 use vm_memory::mmap::MmapRegion;
 #[cfg(not(feature = "tee"))]
 use vm_memory::Address;
@@ -335,9 +338,9 @@ enum Payload {
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
     KernelMmap,
     #[cfg(all(target_arch = "aarch64", not(feature = "efi")))]
-    KernelCopy(KernelBundle),
+    KernelCopy,
     #[cfg(not(feature = "efi"))]
-    ExternalKernel(PathBuf),
+    ExternalKernel(ExternalKernel),
     #[cfg(test)]
     Empty,
     #[cfg(feature = "efi")]
@@ -347,7 +350,7 @@ enum Payload {
 }
 
 #[cfg(not(feature = "efi"))]
-fn choose_payload(vm_resources: &VmResources) -> Result<(Payload, u64), StartMicrovmError> {
+fn choose_payload(vm_resources: &VmResources) -> Result<Payload, StartMicrovmError> {
     if let Some(_kernel_bundle) = &vm_resources.kernel_bundle {
         #[cfg(feature = "tee")]
         if vm_resources.qboot_bundle.is_none() || vm_resources.initrd_bundle.is_none() {
@@ -355,18 +358,15 @@ fn choose_payload(vm_resources: &VmResources) -> Result<(Payload, u64), StartMic
         }
 
         #[cfg(feature = "tee")]
-        return Ok((Payload::Tee, arch::RESET_VECTOR));
+        return Ok(Payload::Tee);
 
         #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
-        return Ok((Payload::KernelMmap, _kernel_bundle.entry_addr));
+        return Ok(Payload::KernelMmap);
 
         #[cfg(all(target_arch = "aarch64", not(feature = "efi")))]
-        return Ok((Payload::KernelCopy, _kernel_bundle.entry_addr));
-    } else if let Some(kernel_path) = vm_resources.external_kernel() {
-        Ok((
-            Payload::ExternalKernel(kernel_path.to_path_buf()),
-            0x8000_0000,
-        ))
+        return Ok(Payload::KernelCopy);
+    } else if let Some(external_kernel) = vm_resources.external_kernel() {
+        Ok(Payload::ExternalKernel(external_kernel.clone()))
     } else {
         Err(StartMicrovmError::MissingKernelConfig)
     }
@@ -390,9 +390,9 @@ pub fn build_microvm(
     _shutdown_efd: Option<EventFd>,
     #[cfg(target_os = "macos")] _map_sender: Sender<MemoryMapping>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
-    let (payload, entry_addr) = choose_payload(vm_resources)?;
+    let payload = choose_payload(vm_resources)?;
 
-    let (guest_memory, arch_memory_info, mut _shm_manager) = create_guest_memory(
+    let (guest_memory, entry_addr, arch_memory_info, mut _shm_manager) = create_guest_memory(
         vm_resources
             .vm_config()
             .mem_size_mib
@@ -565,7 +565,7 @@ pub fn build_microvm(
             &vm,
             &vcpu_config,
             &guest_memory,
-            GuestAddress(entry_addr),
+            entry_addr,
             &pio_device_manager.io_bus,
             &exit_evt,
         )
@@ -578,14 +578,8 @@ pub fn build_microvm(
     // Search for `kvm_arch_vcpu_create` in arch/arm/kvm/arm.c.
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     {
-        vcpus = create_vcpus_aarch64(
-            &vm,
-            &vcpu_config,
-            &guest_memory,
-            GuestAddress(entry_addr),
-            &exit_evt,
-        )
-        .map_err(StartMicrovmError::Internal)?;
+        vcpus = create_vcpus_aarch64(&vm, &vcpu_config, &guest_memory, entry_addr, &exit_evt)
+            .map_err(StartMicrovmError::Internal)?;
 
         setup_interrupt_controller(&mut vm, vcpu_config.vcpu_count)?;
         attach_legacy_devices(
@@ -780,26 +774,94 @@ pub fn build_microvm(
     Ok(vmm)
 }
 
+fn load_external_kernel(
+    guest_mem: &GuestMemoryMmap,
+    external_kernel: &ExternalKernel,
+) -> std::result::Result<GuestAddress, StartMicrovmError> {
+    let entry_addr = match external_kernel.format {
+        #[cfg(target_arch = "x86_64")]
+        ExternalKernelFormat::BzImage => {
+            let bz_data: Vec<u8> = std::fs::read(external_kernel.path.clone()).unwrap();
+            let mut dec = BzDecoder::new(compressed);
+            let mut kernel_data: Vec<u8> = Vec::new();
+            dec.read_to_end(&mut kernel_data).unwrap();
+            let load_result = loader::Elf::load(guest_mem, None, Cursor::new(kernel_data), None)
+                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
+            load_result.kernel_load
+        }
+        #[cfg(target_arch = "x86_64")]
+        ExternalKernelFormat::Elf => {
+            let mut file = File::options()
+                .read(true)
+                .write(false)
+                .open(external_kernel.path.clone())
+                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
+            let load_result = loader::Elf::load(guest_mem, None, &mut file, None)
+                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
+            load_result.kernel_load
+        }
+        #[cfg(target_arch = "aarch64")]
+        ExternalKernelFormat::Pe => {
+            let pe_data: Vec<u8> = std::fs::read(external_kernel.path.clone()).unwrap();
+            if let Some(magic) = pe_data
+                .windows(3)
+                .position(|window| window == [0x1f, 0x8b, 0x8])
+            {
+                debug!("Found gzip header on PE file at: 0x{:x}", magic);
+                let (_, compressed) = pe_data.split_at(magic);
+                let mut gz = GzDecoder::new(compressed);
+                let mut kernel_data: Vec<u8> = Vec::new();
+                gz.read_to_end(&mut kernel_data).unwrap();
+                guest_mem
+                    .write(&kernel_data, GuestAddress(0x8000_0000))
+                    .unwrap();
+                GuestAddress(0x8000_0000)
+            } else {
+                return Err(StartMicrovmError::MissingKernelConfig);
+            }
+        }
+        _ => return Err(StartMicrovmError::MissingKernelConfig),
+    };
+
+    debug!("load_external_kernel: 0x{:x}", entry_addr.0);
+
+    Ok(entry_addr)
+}
+
 fn load_payload(
     vm_resources: &VmResources,
     guest_mem: GuestMemoryMmap,
     payload: &Payload,
-) -> std::result::Result<GuestMemoryMmap, StartMicrovmError> {
+) -> std::result::Result<(GuestMemoryMmap, GuestAddress), StartMicrovmError> {
+    println!("load_payload");
     match payload {
         #[cfg(all(target_arch = "aarch64", not(feature = "efi")))]
-        Payload::KernelCopy(kernel_region, kernel_load_addr, kernel_size) => {
+        Payload::KernelCopy => {
+            let (kernel_entry_addr, kernel_host_addr, kernel_guest_addr, kernel_size) =
+                if let Some(kernel_bundle) = &vm_resources.kernel_bundle {
+                    (
+                        kernel_bundle.entry_addr,
+                        kernel_bundle.host_addr,
+                        kernel_bundle.guest_addr,
+                        kernel_bundle.size,
+                    )
+                } else {
+                    return Err(StartMicrovmError::MissingKernelConfig);
+                };
+
             let kernel_data =
-                unsafe { std::slice::from_raw_parts(kernel_region.as_ptr(), kernel_size) };
+                unsafe { std::slice::from_raw_parts(kernel_host_addr as *mut u8, kernel_size) };
             guest_mem
-                .write(kernel_data, GuestAddress(kernel_load_addr))
+                .write(kernel_data, GuestAddress(kernel_guest_addr))
                 .unwrap();
-            Ok(guest_mem)
+            Ok((guest_mem, GuestAddress(kernel_entry_addr)))
         }
         #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
         Payload::KernelMmap => {
-            let (kernel_host_addr, kernel_guest_addr, kernel_size) =
+            let (kernel_entry_addr, kernel_host_addr, kernel_guest_addr, kernel_size) =
                 if let Some(kernel_bundle) = &vm_resources.kernel_bundle {
                     (
+                        kernel_bundle.entry_addr,
                         kernel_bundle.host_addr,
                         kernel_bundle.guest_addr,
                         kernel_bundle.size,
@@ -813,17 +875,23 @@ fn load_payload(
                     .map_err(StartMicrovmError::InvalidKernelBundle)?
             };
 
-            guest_mem
-                .insert_region(Arc::new(
-                    GuestRegionMmap::new(kernel_region, GuestAddress(kernel_guest_addr))
-                        .map_err(StartMicrovmError::GuestMemoryMmap)?,
-                ))
-                .map_err(StartMicrovmError::GuestMemoryMmap)
+            Ok((
+                guest_mem
+                    .insert_region(Arc::new(
+                        GuestRegionMmap::new(kernel_region, GuestAddress(kernel_guest_addr))
+                            .map_err(StartMicrovmError::GuestMemoryMmap)?,
+                    ))
+                    .map_err(StartMicrovmError::GuestMemoryMmap)?,
+                GuestAddress(kernel_entry_addr),
+            ))
         }
         #[cfg(not(feature = "efi"))]
-        Payload::ExternalKernel(_kernel_path) => Ok(guest_mem),
+        Payload::ExternalKernel(external_kernel) => {
+            let entry_addr = load_external_kernel(&guest_mem, external_kernel)?;
+            Ok((guest_mem, entry_addr))
+        }
         #[cfg(test)]
-        Payload::Empty => Ok(guest_mem),
+        Payload::Empty => Ok((guest_mem, GuestAddress(0))),
         #[cfg(feature = "tee")]
         Payload::Tee => {
             let (kernel_host_addr, kernel_guest_addr, kernel_size) =
@@ -868,12 +936,12 @@ fn load_payload(
                     GuestAddress(arch::x86_64::layout::INITRD_SEV_START),
                 )
                 .unwrap();
-            Ok(guest_mem)
+            Ok((guest_mem, GuestAddress(arch::BIOS_START)))
         }
         #[cfg(feature = "efi")]
         Payload::Efi => {
             guest_mem.write(EDK2_BINARY, GuestAddress(0u64)).unwrap();
-            Ok(guest_mem)
+            Ok((guest_mem, 0))
         }
     }
 }
@@ -882,7 +950,10 @@ fn create_guest_memory(
     mem_size: usize,
     vm_resources: &VmResources,
     payload: &Payload,
-) -> std::result::Result<(GuestMemoryMmap, ArchMemoryInfo, ShmManager), StartMicrovmError> {
+) -> std::result::Result<
+    (GuestMemoryMmap, GuestAddress, ArchMemoryInfo, ShmManager),
+    StartMicrovmError,
+> {
     let mem_size = mem_size << 20;
 
     #[cfg(target_arch = "x86_64")]
@@ -895,10 +966,10 @@ fn create_guest_memory(
                 } else {
                     return Err(StartMicrovmError::MissingKernelConfig);
                 };
-            arch::arch_memory_regions(mem_size, kernel_guest_addr, kernel_size)
+            arch::arch_memory_regions(mem_size, Some(kernel_guest_addr), kernel_size)
         }
         #[cfg(not(feature = "efi"))]
-        Payload::ExternalKernel(_kernel_path) => arch::arch_memory_regions(mem_size, 0, 0),
+        Payload::ExternalKernel(_kernel_path) => arch::arch_memory_regions(mem_size, None, 0),
         #[cfg(feature = "tee")]
         Payload::Tee => {
             let (kernel_guest_addr, kernel_size) =
@@ -910,7 +981,7 @@ fn create_guest_memory(
             arch::arch_memory_regions(mem_size, kernel_guest_addr, kernel_size)
         }
         #[cfg(test)]
-        Payload::Empty => arch::arch_memory_regions(mem_size, 0, 0),
+        Payload::Empty => arch::arch_memory_regions(mem_size, None, 0),
     };
     #[cfg(target_arch = "aarch64")]
     let (arch_mem_info, mut arch_mem_regions) = arch::arch_memory_regions(mem_size);
@@ -937,9 +1008,9 @@ fn create_guest_memory(
     let guest_mem = GuestMemoryMmap::from_ranges(&arch_mem_regions)
         .map_err(StartMicrovmError::GuestMemoryMmap)?;
 
-    let guest_mem = load_payload(vm_resources, guest_mem, payload)?;
+    let (guest_mem, entry_addr) = load_payload(vm_resources, guest_mem, payload)?;
 
-    Ok((guest_mem, arch_mem_info, shm_manager))
+    Ok((guest_mem, entry_addr, arch_mem_info, shm_manager))
 }
 
 #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]

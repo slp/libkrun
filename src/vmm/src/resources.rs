@@ -18,6 +18,7 @@ use kbs_types::Tee;
 #[cfg(feature = "blk")]
 use crate::vmm_config::block::{BlockBuilder, BlockConfigError, BlockDeviceConfig};
 use crate::vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
+use crate::vmm_config::external_kernel::ExternalKernel;
 #[cfg(not(feature = "tee"))]
 use crate::vmm_config::fs::*;
 #[cfg(feature = "tee")]
@@ -86,7 +87,7 @@ pub struct VmResources {
     /// The parameters for the kernel bundle to be loaded in this microVM.
     pub kernel_bundle: Option<KernelBundle>,
     /// The path to an external kernel, as an alternative to KernelBundle.
-    pub external_kernel: Option<PathBuf>,
+    pub external_kernel: Option<ExternalKernel>,
     /// The parameters for the qboot bundle to be loaded in this microVM.
     #[cfg(feature = "tee")]
     pub qboot_bundle: Option<QbootBundle>,
@@ -205,12 +206,12 @@ impl VmResources {
         Ok(())
     }
 
-    pub fn external_kernel(&self) -> Option<&PathBuf> {
+    pub fn external_kernel(&self) -> Option<&ExternalKernel> {
         self.external_kernel.as_ref()
     }
 
-    pub fn set_external_kernel(&mut self, path: PathBuf) {
-        self.external_kernel = Some(path);
+    pub fn set_external_kernel(&mut self, external_kernel: ExternalKernel) {
+        self.external_kernel = Some(external_kernel);
     }
 
     #[cfg(feature = "tee")]
