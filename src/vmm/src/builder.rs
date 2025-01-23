@@ -19,8 +19,7 @@ use super::{Error, Vmm};
 use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use crate::resources::VmResources;
-use crate::vmm_config::external_kernel::{ExternalKernel, ExternalKernelFormat};
-//use crate::vmm_config::kernel_bundle::{InitrdBundle, KernelBundle, QbootBundle};
+use crate::vmm_config::external_kernel::{ExternalKernel, KernelFormat};
 use devices::legacy::GicV3;
 use devices::legacy::Serial;
 #[cfg(target_os = "macos")]
@@ -86,8 +85,36 @@ pub enum StartMicrovmError {
     AttachBlockDevice(io::Error),
     /// Failed to create a `RateLimiter` object.
     CreateRateLimiter(io::Error),
+    /// Cannot open the file containing the kernel code.
+    ElfOpenKernel(io::Error),
+    /// Cannot load the kernel into the VM.
+    ElfLoadKernel(linux_loader::loader::Error),
     /// Memory regions are overlapping or mmap fails.
     GuestMemoryMmap(vm_memory::Error),
+    /// The BZIP2 decoder couldn't decompress the kernel.
+    ImageBz2Decoder(io::Error),
+    /// Cannot find compressed kernel in file.
+    ImageBz2Invalid,
+    /// Cannot load the kernel from the uncompressed ELF data.
+    ImageBz2LoadKernel(linux_loader::loader::Error),
+    /// Cannot open the file containing the kernel code.
+    ImageBz2OpenKernel(io::Error),
+    /// The GZIP decoder couldn't decompress the kernel.
+    ImageGzDecoder(io::Error),
+    /// Cannot find compressed kernel in file.
+    ImageGzInvalid,
+    /// Cannot load the kernel from the uncompressed ELF data.
+    ImageGzLoadKernel(linux_loader::loader::Error),
+    /// Cannot open the file containing the kernel code.
+    ImageGzOpenKernel(io::Error),
+    /// The ZSTD decoder couldn't decompress the kernel.
+    ImageZstdDecoder(io::Error),
+    /// Cannot find compressed kernel in file.
+    ImageZstdInvalid,
+    /// Cannot load the kernel from the uncompressed ELF data.
+    ImageZstdLoadKernel(linux_loader::loader::Error),
+    /// Cannot open the file containing the kernel code.
+    ImageZstdOpenKernel(io::Error),
     /// Cannot load initrd due to an invalid memory configuration.
     InitrdLoad,
     /// Cannot load initrd due to an invalid image.
@@ -98,6 +125,8 @@ pub enum StartMicrovmError {
     InvalidKernelBundle(vm_memory::mmap::MmapRegionError),
     /// The kernel command line is invalid.
     KernelCmdline(String),
+    /// The supplied kernel format is not supported.
+    KernelFormatUnsupported,
     /// Cannot load command line string.
     LoadCommandline(kernel::cmdline::Error),
     /// The start command was issued more than once.
@@ -112,6 +141,12 @@ pub enum StartMicrovmError {
     OpenBlockDevice(io::Error),
     /// Cannot open console output file.
     OpenConsoleFile(io::Error),
+    /// The GZIP decoder couldn't decompress the kernel.
+    PeGzDecoder(io::Error),
+    /// Cannot open the file containing the kernel code.
+    PeGzOpenKernel(io::Error),
+    /// Cannot find compressed kernel in file.
+    PeGzInvalid,
     /// Cannot initialize a MMIO Balloon device or add a device to the MMIO Bus.
     RegisterBalloonDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO Block Device or add a device to the MMIO Bus.
@@ -163,11 +198,62 @@ impl Display for StartMicrovmError {
                 write!(f, "Unable to attach block device to Vmm. Error: {err}")
             }
             CreateRateLimiter(ref err) => write!(f, "Cannot create RateLimiter: {err}"),
+            ElfOpenKernel(ref err) => {
+                write!(f, "annot open the file containing the kernel code: {err}")
+            }
+            ElfLoadKernel(ref err) => {
+                write!(f, "Cannot load the kernel into the VM: {err}")
+            }
             GuestMemoryMmap(ref err) => {
                 // Remove imbricated quotes from error message.
                 let mut err_msg = format!("{err:?}");
                 err_msg = err_msg.replace('\"', "");
                 write!(f, "Invalid Memory Configuration: {err_msg}")
+            }
+            ImageBz2Decoder(ref err) => {
+                write!(f, "The BZIP2 decoder couldn't decompress the kernel. {err}")
+            }
+            ImageBz2Invalid => {
+                write!(f, "Cannot find compressed kernel in file.")
+            }
+            ImageBz2LoadKernel(ref err) => {
+                write!(
+                    f,
+                    "Cannot load the kernel from the uncompressed ELF data. {err}"
+                )
+            }
+            ImageBz2OpenKernel(ref err) => {
+                write!(f, "Cannot open the file containing the kernel code. {err}")
+            }
+            ImageGzDecoder(ref err) => {
+                write!(f, "The GZIP decoder couldn't decompress the kernel. {err}")
+            }
+            ImageGzInvalid => {
+                write!(f, "Cannot find compressed kernel in file.")
+            }
+            ImageGzLoadKernel(ref err) => {
+                write!(
+                    f,
+                    "Cannot load the kernel from the uncompressed ELF data. {err}"
+                )
+            }
+            ImageGzOpenKernel(ref err) => {
+                write!(f, "Cannot open the file containing the kernel code. {err}")
+            }
+            ImageZstdDecoder(ref err) => {
+                write!(f, "The ZSTD decoder couldn't decompress the kernel. {err}")
+            }
+            ImageZstdInvalid => {
+                write!(f, "Cannot find compressed kernel in file.")
+            }
+            ImageZstdLoadKernel(ref err) => {
+                write!(
+                    f,
+                    "Cannot load the kernel from the uncompressed ELF data. {err}"
+                )
+            }
+            ImageZstdOpenKernel(ref err) => {
+                write!(f, "Cannot open the file containing the kernel code. {err}")
             }
             InitrdLoad => write!(
                 f,
@@ -185,6 +271,9 @@ impl Display for StartMicrovmError {
                 )
             }
             KernelCmdline(ref err) => write!(f, "Invalid kernel command line: {err}"),
+            KernelFormatUnsupported => {
+                write!(f, "The supplied kernel format is not supported.")
+            }
             LoadCommandline(ref err) => {
                 let mut err_msg = format!("{err}");
                 err_msg = err_msg.replace('\"', "");
@@ -209,6 +298,15 @@ impl Display for StartMicrovmError {
                 err_msg = err_msg.replace('\"', "");
 
                 write!(f, "Cannot open the console output file. {err_msg}")
+            }
+            PeGzDecoder(ref err) => {
+                write!(f, "The GZIP decoder couldn't decompress the kernel. {err}")
+            }
+            PeGzOpenKernel(ref err) => {
+                write!(f, "Cannot open the file containing the kernel code. {err}")
+            }
+            PeGzInvalid => {
+                write!(f, "Cannot find compressed kernel in file.")
             }
             RegisterBalloonDevice(ref err) => {
                 let mut err_msg = format!("{err}");
@@ -510,7 +608,7 @@ pub fn build_microvm(
             None,
             None,
             // Uncomment this to get EFI output when debugging EDK2.
-            // Some(Box::new(io::stdout())),
+            //Some(Box::new(io::stdout())),
         )?)
     } else {
         None
@@ -779,48 +877,118 @@ fn load_external_kernel(
     external_kernel: &ExternalKernel,
 ) -> std::result::Result<GuestAddress, StartMicrovmError> {
     let entry_addr = match external_kernel.format {
+        // Raw images are treated as bundled kernels
+        KernelFormat::Raw => unreachable!(),
         #[cfg(target_arch = "x86_64")]
-        ExternalKernelFormat::BzImage => {
-            let bz_data: Vec<u8> = std::fs::read(external_kernel.path.clone()).unwrap();
-            let mut dec = BzDecoder::new(compressed);
-            let mut kernel_data: Vec<u8> = Vec::new();
-            dec.read_to_end(&mut kernel_data).unwrap();
-            let load_result = loader::Elf::load(guest_mem, None, Cursor::new(kernel_data), None)
-                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
-            load_result.kernel_load
-        }
-        #[cfg(target_arch = "x86_64")]
-        ExternalKernelFormat::Elf => {
+        KernelFormat::Elf => {
             let mut file = File::options()
                 .read(true)
                 .write(false)
                 .open(external_kernel.path.clone())
-                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
+                .map_err(StartMicrovmError::ElfOpenKernel)?;
             let load_result = loader::Elf::load(guest_mem, None, &mut file, None)
-                .map_err(|_| StartMicrovmError::MissingKernelConfig)?;
+                .map_err(StartMicrovmError::ElfLoadKernel)?;
             load_result.kernel_load
         }
         #[cfg(target_arch = "aarch64")]
-        ExternalKernelFormat::Pe => {
-            let pe_data: Vec<u8> = std::fs::read(external_kernel.path.clone()).unwrap();
-            if let Some(magic) = pe_data
+        KernelFormat::PeGz => {
+            let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
+                .map_err(StartMicrovmError::PeGzOpenKernel)?;
+            if let Some(magic) = data
                 .windows(3)
                 .position(|window| window == [0x1f, 0x8b, 0x8])
             {
-                debug!("Found gzip header on PE file at: 0x{:x}", magic);
-                let (_, compressed) = pe_data.split_at(magic);
+                debug!("Found GZIP header on PE file at: 0x{:x}", magic);
+                let (_, compressed) = data.split_at(magic);
                 let mut gz = GzDecoder::new(compressed);
                 let mut kernel_data: Vec<u8> = Vec::new();
-                gz.read_to_end(&mut kernel_data).unwrap();
+                gz.read_to_end(&mut kernel_data)
+                    .map_err(StartMicrovmError::PeGzDecoder)?;
                 guest_mem
                     .write(&kernel_data, GuestAddress(0x8000_0000))
                     .unwrap();
                 GuestAddress(0x8000_0000)
             } else {
-                return Err(StartMicrovmError::MissingKernelConfig);
+                return Err(StartMicrovmError::PeGzInvalid);
             }
         }
-        _ => return Err(StartMicrovmError::MissingKernelConfig),
+        #[cfg(target_arch = "x86_64")]
+        KernelFormat::ImageBz2 => {
+            let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
+                .map_err(StartMicrovmError::ImageBz2OpenKernel)?;
+            if let Some(magic) = data
+                .windows(4)
+                .position(|window| window == [b'B', b'Z', b'h'])
+            {
+                debug!("Found BZIP2 header on Image file at: 0x{:x}", magic);
+                let (_, compressed) = data.split_at(magic);
+                let mut kernel_data: Vec<u8> = Vec::new();
+                let mut bz2 = bzip2::read::BzDecoder::new(compressed);
+                bz2.read_to_end(&mut kernel_data)
+                    .map_err(StartMicrovmError::ImageBz2Decoder)?;
+                let load_result = loader::Elf::load(
+                    guest_mem,
+                    None,
+                    &mut std::io::Cursor::new(kernel_data),
+                    None,
+                )
+                .map_err(StartMicrovmError::ImageBz2LoadKernel)?;
+                load_result.kernel_load
+            } else {
+                return Err(StartMicrovmError::ImageBz2Invalid);
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        KernelFormat::ImageGz => {
+            let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
+                .map_err(StartMicrovmError::ImageGzOpenKernel)?;
+            if let Some(magic) = data
+                .windows(3)
+                .position(|window| window == [0x1f, 0x8b, 0x8])
+            {
+                debug!("Found GZIP header on Image file at: 0x{:x}", magic);
+                let (_, compressed) = data.split_at(magic);
+                let mut gz = GzDecoder::new(compressed);
+                let mut kernel_data: Vec<u8> = Vec::new();
+                gz.read_to_end(&mut kernel_data)
+                    .map_err(StartMicrovmError::ImageGzDecoder)?;
+                let load_result = loader::Elf::load(
+                    guest_mem,
+                    None,
+                    &mut std::io::Cursor::new(kernel_data),
+                    None,
+                )
+                .map_err(StartMicrovmError::ImageGzLoadKernel)?;
+                load_result.kernel_load
+            } else {
+                return Err(StartMicrovmError::ImageGzInvalid);
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        KernelFormat::ImageZstd => {
+            let data: Vec<u8> = std::fs::read(external_kernel.path.clone())
+                .map_err(StartMicrovmError::ImageZstdOpenKernel)?;
+            if let Some(magic) = data
+                .windows(4)
+                .position(|window| window == [0x28, 0xb5, 0x2f, 0xfd])
+            {
+                debug!("Found ZSTD header on Image file at: 0x{:x}", magic);
+                let (_, zstd_data) = data.split_at(magic);
+                let mut kernel_data: Vec<u8> = Vec::new();
+                let _ = zstd::stream::copy_decode(zstd_data, &mut kernel_data);
+                let load_result = loader::Elf::load(
+                    guest_mem,
+                    None,
+                    &mut std::io::Cursor::new(kernel_data),
+                    None,
+                )
+                .map_err(StartMicrovmError::ImageZstdLoadKernel)?;
+                load_result.kernel_load
+            } else {
+                return Err(StartMicrovmError::ImageZstdInvalid);
+            }
+        }
+        _ => return Err(StartMicrovmError::KernelFormatUnsupported),
     };
 
     debug!("load_external_kernel: 0x{:x}", entry_addr.0);

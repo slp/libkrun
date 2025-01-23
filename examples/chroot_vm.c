@@ -234,7 +234,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (1) and the amount of RAM (512 MiB).
-    if (err = krun_set_vm_config(ctx_id, 4, 4096)) {
+    if (err = krun_set_vm_config(ctx_id, 1, 4096)) {
         errno = -err;
         perror("Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
@@ -294,12 +294,13 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (err = krun_set_kernel(ctx_id, "/home/slp/src/libkrunfw/linux-6.12.3/arch/x86_64/boot/bzImage", KRUN_KERNEL_FORMAT_BZIMAGE)) {
-    //if (err = krun_set_kernel(ctx_id, "/home/slp/src/libkrunfw/linux-6.12.3/vmlinux", KRUN_KERNEL_FORMAT_ELF)) {
+    /*
+    if (err = krun_set_kernel(ctx_id, "/home/slp/src/libkrunfw/linux-6.12.3/vmlinux", KRUN_KERNEL_FORMAT_ELF)) {
         errno = -err;
         perror("Error configuring the kernel");
         return -1;
     }
+    */
 
     // Specify the path of the binary to be executed in the isolated context, relative to the root path.
     if (err = krun_set_exec(ctx_id, cmdline.guest_argv[0], (const char* const*) &cmdline.guest_argv[1], &envp[0])) {

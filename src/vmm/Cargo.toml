@@ -14,6 +14,7 @@ gpu = []
 snd = []
 
 [dependencies]
+bzip2 = "0.5"
 crossbeam-channel = "0.5"
 env_logger = "0.9.0"
 flate2 = "1.0.35"
@@ -21,6 +22,7 @@ libc = ">=0.2.39"
 linux-loader = { version = "0.13.0", features = ["bzimage", "elf", "pe"] }
 log = "0.4.0"
 vm-memory = { version = ">=0.13", features = ["backend-mmap"] }
+zstd = "0.13"
 
 arch = { path = "../arch" }
 devices = { path = "../devices" }

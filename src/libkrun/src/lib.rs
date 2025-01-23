@@ -40,7 +40,7 @@ use vmm::resources::VmResources;
 use vmm::vmm_config::block::BlockDeviceConfig;
 use vmm::vmm_config::boot_source::{BootSourceConfig, DEFAULT_KERNEL_CMDLINE};
 #[cfg(all(not(feature = "efi"), not(feature = "tee")))]
-use vmm::vmm_config::external_kernel::{ExternalKernel, ExternalKernelFormat};
+use vmm::vmm_config::external_kernel::{ExternalKernel, KernelFormat};
 #[cfg(not(feature = "tee"))]
 use vmm::vmm_config::fs::FsDeviceConfig;
 #[cfg(not(feature = "efi"))]
@@ -1105,13 +1105,15 @@ pub unsafe extern "C" fn krun_set_kernel(
     };
 
     let format = match kernel_format {
-        0 => ExternalKernelFormat::BzImage,
-        1 => ExternalKernelFormat::Elf,
-        2 => ExternalKernelFormat::Pe,
         // For raw kernels, we map the kernel into the process
         // and treat it as a bundled kernel.
         #[cfg(all(not(feature = "efi"), not(feature = "tee")))]
-        3 => return map_kernel(ctx_id, kernel_path),
+        0 => return map_kernel(ctx_id, kernel_path),
+        1 => KernelFormat::Elf,
+        2 => KernelFormat::PeGz,
+        3 => KernelFormat::ImageBz2,
+        4 => KernelFormat::ImageGz,
+        5 => KernelFormat::ImageZstd,
         _ => {
             return -libc::EINVAL;
         }
