@@ -69,6 +69,7 @@ pub fn arch_memory_regions(
     size: usize,
     kernel_load_addr: Option<u64>,
     kernel_size: usize,
+    initrd_size: u64,
 ) -> (ArchMemoryInfo, Vec<(GuestAddress, usize)>) {
     let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
 
@@ -136,6 +137,7 @@ pub fn arch_memory_regions(
         ram_last_addr,
         shm_start_addr,
         page_size,
+        initrd_addr: ram_last_addr - initrd_size,
     };
     (info, regions)
 }

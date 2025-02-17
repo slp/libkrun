@@ -8,9 +8,9 @@ use std::env;
 use std::ffi::CStr;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
-#[cfg(all(not(feature = "efi"), not(feature = "tee")))]
+#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
 use std::fs::File;
-#[cfg(not(feature = "efi"))]
+#[cfg(all(target_arch = "x86_64", not(feature = "efi")))]
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
@@ -1033,7 +1033,7 @@ fn create_virtio_net(ctx_cfg: &mut ContextConfig, backend: VirtioNetBackend) {
         .expect("Failed to create network interface");
 }
 
-#[cfg(all(not(feature = "efi"), not(feature = "tee")))]
+#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
 fn map_kernel(ctx_id: u32, kernel_path: &str) -> i32 {
     let file = match File::options().read(true).write(false).open(kernel_path) {
         Ok(file) => file,
@@ -1095,9 +1095,11 @@ pub unsafe extern "C" fn krun_set_kernel(
     ctx_id: u32,
     c_kernel_path: *const c_char,
     kernel_format: u32,
+    c_initramfs_path: *const c_char,
+    c_cmdline: *const c_char,
 ) -> i32 {
-    let kernel_path = match CStr::from_ptr(c_kernel_path).to_str() {
-        Ok(path) => path,
+    let path = match CStr::from_ptr(c_kernel_path).to_str() {
+        Ok(path) => PathBuf::from(path),
         Err(e) => {
             error!("Error parsing kernel_path: {:?}", e);
             return -libc::EINVAL;
@@ -1107,7 +1109,7 @@ pub unsafe extern "C" fn krun_set_kernel(
     let format = match kernel_format {
         // For raw kernels, we map the kernel into the process
         // and treat it as a bundled kernel.
-        #[cfg(all(not(feature = "efi"), not(feature = "tee")))]
+        #[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
         0 => return map_kernel(ctx_id, kernel_path),
         1 => KernelFormat::Elf,
         2 => KernelFormat::PeGz,
@@ -1119,9 +1121,46 @@ pub unsafe extern "C" fn krun_set_kernel(
         }
     };
 
+    let (initramfs_path, initramfs_size) = if !c_initramfs_path.is_null() {
+        match CStr::from_ptr(c_initramfs_path).to_str() {
+            Ok(path) => {
+                let path = PathBuf::from(path);
+                let size = match std::fs::metadata(&path) {
+                    Ok(metadata) => metadata.len(),
+                    Err(e) => {
+                        error!("Can't read initramfs metadata: {:?}", e);
+                        return -libc::EINVAL;
+                    }
+                };
+                (Some(path), size)
+            }
+            Err(e) => {
+                error!("Error parsing initramfs path: {:?}", e);
+                return -libc::EINVAL;
+            }
+        }
+    } else {
+        (None, 0)
+    };
+
+    let cmdline = if !c_cmdline.is_null() {
+        match CStr::from_ptr(c_cmdline).to_str() {
+            Ok(cmdline) => Some(cmdline.to_string()),
+            Err(e) => {
+                error!("Error parsing kernel cmdline: {:?}", e);
+                return -libc::EINVAL;
+            }
+        }
+    } else {
+        None
+    };
+
     let external_kernel = ExternalKernel {
-        path: PathBuf::from(kernel_path),
+        path,
         format,
+        initramfs_path,
+        initramfs_size,
+        cmdline,
     };
 
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
