@@ -17,10 +17,10 @@ use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use crate::resources::VmResources;
 use crate::vmm_config::external_kernel::{ExternalKernel, KernelFormat};
-use devices::legacy::GicV3;
 use devices::legacy::Serial;
 #[cfg(target_os = "macos")]
 use devices::legacy::VcpuList;
+use devices::legacy::{GicV3, IrqChip, IrqChipDevice};
 #[cfg(feature = "net")]
 use devices::virtio::Net;
 use devices::virtio::{port_io, MmioTransport, PortDescription, Vsock};
@@ -636,7 +636,9 @@ pub fn build_microvm(
     #[cfg(target_os = "linux")]
     let intc = None;
     #[cfg(target_os = "macos")]
-    let intc = Some(GicV3::new(vcpu_list.clone()));
+    let intc: Option<IrqChip> = Some(Arc::new(Mutex::new(IrqChipDevice::new(Box::new(
+        GicV3::new(vcpu_list.clone()),
+    )))));
 
     let vcpus;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
@@ -1365,7 +1367,7 @@ fn attach_legacy_devices(
     vm: &Vm,
     mmio_device_manager: &mut MMIODeviceManager,
     kernel_cmdline: &mut kernel::cmdline::Cmdline,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
     serial: Option<Arc<Mutex<Serial>>>,
     event_manager: &mut EventManager,
     shutdown_efd: Option<EventFd>,
@@ -1526,7 +1528,7 @@ fn attach_fs_devices(
     fs_devs: &[FsDeviceConfig],
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] export_table: Option<ExportTable>,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
     #[cfg(target_os = "macos")] map_sender: Sender<MemoryMapping>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1576,7 +1578,7 @@ fn attach_fs_devices(
 fn attach_console_devices(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
     console_output: Option<PathBuf>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1676,7 +1678,7 @@ fn attach_console_devices(
 fn attach_net_devices<'a>(
     vmm: &mut Vmm,
     net_devices: impl Iterator<Item = &'a Arc<Mutex<Net>>>,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> Result<(), StartMicrovmError> {
     for net_device in net_devices {
         let id = net_device.lock().unwrap().id().to_string();
@@ -1699,7 +1701,7 @@ fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock>>,
     event_manager: &mut EventManager,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1728,7 +1730,7 @@ fn attach_unixsock_vsock_device(
 fn attach_balloon_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1759,7 +1761,7 @@ fn attach_balloon_device(
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1786,7 +1788,7 @@ fn attach_block_devices(
 fn attach_rng_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1815,7 +1817,7 @@ fn attach_gpu_device(
     event_manager: &mut EventManager,
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
     virgl_flags: u32,
     #[cfg(target_os = "macos")] map_sender: Sender<MemoryMapping>,
 ) -> std::result::Result<(), StartMicrovmError> {
@@ -1866,7 +1868,7 @@ fn attach_gpu_device(
 #[cfg(feature = "snd")]
 fn attach_snd_device(
     vmm: &mut Vmm,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 

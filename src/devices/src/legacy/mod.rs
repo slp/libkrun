@@ -8,6 +8,7 @@
 #[cfg(target_os = "macos")]
 mod gicv3;
 mod i8042;
+mod irqchip;
 #[cfg(target_arch = "aarch64")]
 mod rtc_pl031;
 #[cfg(target_os = "macos")]
@@ -29,6 +30,7 @@ pub use self::gicv3::GicV3;
 pub use self::gpio::Gpio;
 pub use self::i8042::Error as I8042DeviceError;
 pub use self::i8042::I8042Device;
+pub use self::irqchip::{IrqChip, IrqChipDevice, IrqChipT};
 #[cfg(target_arch = "aarch64")]
 pub use self::rtc_pl031::RTC;
 pub use self::serial::Serial;

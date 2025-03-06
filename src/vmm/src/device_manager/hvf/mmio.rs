@@ -14,7 +14,7 @@ use arch::aarch64::DeviceInfoForFDT;
 use arch::DeviceType;
 use devices;
 
-use devices::legacy::GicV3;
+use devices::legacy::IrqChip;
 use devices::BusDevice;
 use kernel::cmdline as kernel_cmdline;
 use polly::event_manager::EventManager;
@@ -142,7 +142,7 @@ impl MMIODeviceManager {
         &mut self,
         _vm: &Vm,
         cmdline: &mut kernel_cmdline::Cmdline,
-        intc: Option<GicV3>,
+        intc: Option<IrqChip>,
         serial: Arc<Mutex<devices::legacy::Serial>>,
     ) -> Result<()> {
         if self.irq > self.last_irq {
@@ -184,7 +184,7 @@ impl MMIODeviceManager {
 
     #[cfg(target_arch = "aarch64")]
     /// Register a MMIO RTC device.
-    pub fn register_mmio_rtc(&mut self, _vm: &Vm, _intc: Option<GicV3>) -> Result<()> {
+    pub fn register_mmio_rtc(&mut self, _vm: &Vm, _intc: Option<IrqChip>) -> Result<()> {
         if self.irq > self.last_irq {
             return Err(Error::IrqsExhausted);
         }
@@ -218,7 +218,7 @@ impl MMIODeviceManager {
     pub fn register_mmio_gpio(
         &mut self,
         _vm: &Vm,
-        intc: Option<GicV3>,
+        intc: Option<IrqChip>,
         event_manager: &mut EventManager,
         shutdown_efd: EventFd,
     ) -> Result<()> {
@@ -263,12 +263,14 @@ impl MMIODeviceManager {
 
     #[cfg(target_arch = "aarch64")]
     /// Register a MMIO GIC device.
-    pub fn register_mmio_gic(&mut self, _vm: &Vm, intc: Option<GicV3>) -> Result<()> {
+    pub fn register_mmio_gic(&mut self, _vm: &Vm, intc: Option<IrqChip>) -> Result<()> {
         if let Some(intc) = intc {
-            let mmio_addr = intc.get_mmio_addr();
-            let mmio_size = intc.get_mmio_size();
+            let (mmio_addr, mmio_size) = {
+                let intc = intc.lock().unwrap();
+                (intc.get_mmio_addr(), intc.get_mmio_size())
+            };
             self.bus
-                .insert(intc.as_device(), mmio_addr, mmio_size)
+                .insert(intc, mmio_addr, mmio_size)
                 .map_err(Error::BusError)?;
         }
 

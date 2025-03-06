@@ -13,7 +13,7 @@ use super::super::{
     VIRTIO_MMIO_INT_VRING,
 };
 use super::{defs, defs::uapi};
-use crate::legacy::GicV3;
+use crate::legacy::IrqChip;
 use crate::Error as DeviceError;
 
 // Inflate queue.
@@ -59,7 +59,7 @@ pub struct Balloon {
     pub(crate) activate_evt: EventFd,
     pub(crate) device_state: DeviceState,
     config: VirtioBalloonConfig,
-    intc: Option<GicV3>,
+    intc: Option<IrqChip>,
     irq_line: Option<u32>,
 }
 
@@ -102,7 +102,7 @@ impl Balloon {
         defs::BALLOON_DEV_ID
     }
 
-    pub fn set_intc(&mut self, intc: GicV3) {
+    pub fn set_intc(&mut self, intc: IrqChip) {
         self.intc = Some(intc);
     }
 
@@ -111,7 +111,7 @@ impl Balloon {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
-            intc.set_irq(self.irq_line.unwrap());
+            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
             Ok(())
         } else {
             self.interrupt_evt.write(1).map_err(|e| {
