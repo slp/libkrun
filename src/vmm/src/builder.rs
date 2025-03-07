@@ -48,10 +48,11 @@ use crate::vstate::KvmContext;
 #[cfg(all(target_os = "linux", feature = "tee"))]
 use crate::vstate::MeasuredRegion;
 use crate::vstate::{Error as VstateError, Vcpu, VcpuConfig, Vm};
-use arch::{ArchMemoryInfo, InitrdConfig};
+use arch::ArchMemoryInfo;
 use device_manager::shm::ShmManager;
 #[cfg(not(feature = "tee"))]
 use devices::virtio::{fs::ExportTable, VirtioShmRegion};
+use devices::InitrdConfig;
 use flate2::read::GzDecoder;
 #[cfg(feature = "tee")]
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
@@ -507,7 +508,7 @@ pub fn build_microvm(
 
     #[cfg(not(feature = "tee"))]
     #[allow(unused_mut)]
-    let mut vm = setup_vm(&guest_memory)?;
+    let mut vm = setup_vm(&guest_memory, vm_resources.vm_config().vcpu_count.unwrap())?;
 
     #[cfg(feature = "tee")]
     let (kvm, vm) = {
@@ -695,7 +696,6 @@ pub fn build_microvm(
         )
         .map_err(StartMicrovmError::Internal)?;
 
-        setup_interrupt_controller(&mut vm, vcpu_config.vcpu_count)?;
         attach_legacy_devices(
             &vm,
             &mut mmio_device_manager,
@@ -798,6 +798,7 @@ pub fn build_microvm(
 
     vmm.configure_system(
         vcpus.as_slice(),
+        &intc,
         &payload_config.initrd_config,
         &vm_resources.smbios_oem_strings,
     )
@@ -1229,6 +1230,7 @@ fn load_cmdline(vmm: &Vmm) -> std::result::Result<(), StartMicrovmError> {
 #[cfg(all(target_os = "linux", not(feature = "tee")))]
 pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
+    _vcpu_count: u8,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
@@ -1258,8 +1260,9 @@ pub(crate) fn setup_vm(
 #[cfg(target_os = "macos")]
 pub(crate) fn setup_vm(
     guest_memory: &GuestMemoryMmap,
+    vcpu_count: u8,
 ) -> std::result::Result<Vm, StartMicrovmError> {
-    let mut vm = Vm::new()
+    let mut vm = Vm::new(vcpu_count)
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)?;
     vm.memory_init(guest_memory)
@@ -1272,17 +1275,6 @@ pub(crate) fn setup_vm(
 #[cfg(target_arch = "x86_64")]
 pub fn setup_interrupt_controller(vm: &Vm) -> std::result::Result<(), StartMicrovmError> {
     vm.setup_irqchip()
-        .map_err(Error::Vm)
-        .map_err(StartMicrovmError::Internal)
-}
-
-/// Sets up the irqchip for a aarch64 microVM.
-#[cfg(target_arch = "aarch64")]
-pub fn setup_interrupt_controller(
-    vm: &mut Vm,
-    vcpu_count: u8,
-) -> std::result::Result<(), StartMicrovmError> {
-    vm.setup_irqchip(vcpu_count)
         .map_err(Error::Vm)
         .map_err(StartMicrovmError::Internal)
 }

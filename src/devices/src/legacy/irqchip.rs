@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::bus::BusDevice;
+use crate::legacy::gic::GICDevice;
 
 pub type IrqChip = Arc<Mutex<IrqChipDevice>>;
 
@@ -36,7 +37,42 @@ impl BusDevice for IrqChipDevice {
     }
 }
 
+impl GICDevice for IrqChipDevice {
+    /// Returns an array with GIC device properties
+    fn device_properties(&self) -> &[u64] {
+        self.inner.device_properties()
+    }
+
+    /// Returns the number of vCPUs this GIC handles
+    fn vcpu_count(&self) -> u64 {
+        self.inner.vcpu_count()
+    }
+
+    /// Returns the fdt compatibility property of the device
+    fn fdt_compatibility(&self) -> &str {
+        self.inner.fdt_compatibility()
+    }
+
+    /// Returns the maint_irq fdt property of the device
+    fn fdt_maint_irq(&self) -> u32 {
+        self.inner.fdt_maint_irq()
+    }
+
+    /// Returns the GIC version of the device
+    fn version(&self) -> u32 {
+        self.inner.version()
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 pub trait IrqChipT: BusDevice {
+    fn get_mmio_addr(&self) -> u64;
+    fn get_mmio_size(&self) -> u64;
+    fn set_irq(&self, irq_line: u32);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub trait IrqChipT: BusDevice + GICDevice {
     fn get_mmio_addr(&self) -> u64;
     fn get_mmio_size(&self) -> u64;
     fn set_irq(&self, irq_line: u32);

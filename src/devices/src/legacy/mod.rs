@@ -5,6 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+pub mod gic;
 #[cfg(target_os = "macos")]
 mod gicv3;
 mod i8042;

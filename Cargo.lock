@@ -73,7 +73,6 @@ dependencies = [
  "libc",
  "smbios",
  "utils",
- "vm-fdt",
  "vm-memory",
 ]
 
@@ -397,6 +396,7 @@ dependencies = [
  "thiserror",
  "utils",
  "virtio-bindings",
+ "vm-fdt",
  "vm-memory",
  "zerocopy 0.6.6",
  "zerocopy-derive 0.6.6",

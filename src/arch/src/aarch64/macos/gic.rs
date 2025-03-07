@@ -69,8 +69,3 @@ pub trait GICDevice: Send {
         Ok(device)
     }
 }
-
-/// Create a GICv3 device.
-pub fn create_gic(vcpu_count: u64) -> Result<Box<dyn GICDevice>> {
-    GICv3::new(vcpu_count)
-}

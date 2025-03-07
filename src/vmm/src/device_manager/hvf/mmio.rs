@@ -9,13 +9,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
-#[cfg(target_arch = "aarch64")]
-use arch::aarch64::DeviceInfoForFDT;
-use arch::DeviceType;
-use devices;
-
+use devices::fdt::DeviceInfoForFDT;
 use devices::legacy::IrqChip;
-use devices::BusDevice;
+use devices::{BusDevice, DeviceType};
 use kernel::cmdline as kernel_cmdline;
 use polly::event_manager::EventManager;
 #[cfg(target_arch = "aarch64")]
