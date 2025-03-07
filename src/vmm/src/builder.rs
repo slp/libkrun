@@ -17,10 +17,14 @@ use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
 use crate::resources::VmResources;
 use crate::vmm_config::external_kernel::{ExternalKernel, KernelFormat};
+#[cfg(target_os = "macos")]
+use devices::legacy::GicV3;
 use devices::legacy::Serial;
 #[cfg(target_os = "macos")]
 use devices::legacy::VcpuList;
-use devices::legacy::{GicV3, IrqChip, IrqChipDevice};
+use devices::legacy::{IrqChip, IrqChipDevice, KvmIoapic};
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+use devices::legacy::{IrqChipDevice, KvmGicV3};
 #[cfg(feature = "net")]
 use devices::virtio::Net;
 use devices::virtio::{port_io, MmioTransport, PortDescription, Vsock};
@@ -48,11 +52,10 @@ use crate::vstate::KvmContext;
 #[cfg(all(target_os = "linux", feature = "tee"))]
 use crate::vstate::MeasuredRegion;
 use crate::vstate::{Error as VstateError, Vcpu, VcpuConfig, Vm};
-use arch::ArchMemoryInfo;
+use arch::{ArchMemoryInfo, InitrdConfig};
 use device_manager::shm::ShmManager;
 #[cfg(not(feature = "tee"))]
 use devices::virtio::{fs::ExportTable, VirtioShmRegion};
-use devices::InitrdConfig;
 use flate2::read::GzDecoder;
 #[cfg(feature = "tee")]
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
@@ -79,6 +82,8 @@ static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/KRUN_EFI.silent.fd");
 pub enum StartMicrovmError {
     /// Unable to attach block device to Vmm.
     AttachBlockDevice(io::Error),
+    /// Failed to create KVM in-kernel IrqChip.
+    CreateKvmIrqChip(kvm_ioctls::Error),
     /// Failed to create a `RateLimiter` object.
     CreateRateLimiter(io::Error),
     /// Cannot open the file containing the kernel code.
@@ -194,6 +199,9 @@ impl Display for StartMicrovmError {
         match *self {
             AttachBlockDevice(ref err) => {
                 write!(f, "Unable to attach block device to Vmm. Error: {err}")
+            }
+            CreateKvmIrqChip(ref err) => {
+                write!(f, "Cannot create KVM in-kernel IrqChip: {err}")
             }
             CreateRateLimiter(ref err) => write!(f, "Cannot create RateLimiter: {err}"),
             ElfOpenKernel(ref err) => {
@@ -634,19 +642,13 @@ pub fn build_microvm(
         Arc::new(VcpuList::new(cpu_count as u64))
     };
 
-    #[cfg(target_os = "linux")]
-    let intc = None;
-    #[cfg(target_os = "macos")]
-    let intc: Option<IrqChip> = Some(Arc::new(Mutex::new(IrqChipDevice::new(Box::new(
-        GicV3::new(vcpu_list.clone()),
-    )))));
-
     let vcpus;
+    let intc;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
     // while on aarch64 we need to do it the other way around.
     #[cfg(target_arch = "x86_64")]
     {
-        setup_interrupt_controller(&vm)?;
+        let kvmioapic = KvmIoapic::new(vm.fd()).map_err(StartMicrovmError::CreateKvmIrqChip)?;
         attach_legacy_devices(&vm, &mut pio_device_manager)?;
 
         vcpus = create_vcpus_x86_64(
@@ -658,6 +660,8 @@ pub fn build_microvm(
             &exit_evt,
         )
         .map_err(StartMicrovmError::Internal)?;
+
+        intc = IrqChipDevice::new(Box::new(kvmioapic));
     }
 
     // On aarch64, the vCPUs need to be created (i.e call KVM_CREATE_VCPU) and configured before
@@ -675,7 +679,11 @@ pub fn build_microvm(
         )
         .map_err(StartMicrovmError::Internal)?;
 
-        setup_interrupt_controller(&mut vm, vcpu_config.vcpu_count)?;
+        intc = IrqChipDevice::new(Box::new(KvmGicV3::new(
+            vm.fd(),
+            vm_resources.vm_config().vcpu_count.unwrap() as u64,
+        )));
+
         attach_legacy_devices(
             &vm,
             &mut mmio_device_manager,
@@ -705,6 +713,8 @@ pub fn build_microvm(
             event_manager,
             _shutdown_efd,
         )?;
+
+        intc = IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone())));
     }
 
     let mut vmm = Vmm {
@@ -719,6 +729,8 @@ pub fn build_microvm(
         #[cfg(target_arch = "x86_64")]
         pio_device_manager,
     };
+
+    //intc = None;
 
     #[cfg(not(feature = "tee"))]
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
@@ -1271,14 +1283,6 @@ pub(crate) fn setup_vm(
     Ok(vm)
 }
 
-/// Sets up the irqchip for a x86_64 microVM.
-#[cfg(target_arch = "x86_64")]
-pub fn setup_interrupt_controller(vm: &Vm) -> std::result::Result<(), StartMicrovmError> {
-    vm.setup_irqchip()
-        .map_err(Error::Vm)
-        .map_err(StartMicrovmError::Internal)
-}
-
 /// Sets up the serial device.
 pub fn setup_serial_device(
     event_manager: &mut EventManager,
@@ -1359,7 +1363,7 @@ fn attach_legacy_devices(
     vm: &Vm,
     mmio_device_manager: &mut MMIODeviceManager,
     kernel_cmdline: &mut kernel::cmdline::Cmdline,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
     serial: Option<Arc<Mutex<Serial>>>,
     event_manager: &mut EventManager,
     shutdown_efd: Option<EventFd>,
@@ -1520,7 +1524,7 @@ fn attach_fs_devices(
     fs_devs: &[FsDeviceConfig],
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] export_table: Option<ExportTable>,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
     #[cfg(target_os = "macos")] map_sender: Sender<MemoryMapping>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1532,9 +1536,7 @@ fn attach_fs_devices(
 
         let id = format!("{}{}", String::from(fs.lock().unwrap().id()), i);
 
-        if let Some(ref intc) = intc {
-            fs.lock().unwrap().set_intc(intc.clone());
-        }
+        fs.lock().unwrap().set_intc(intc.clone());
 
         if let Some(shm_region) = shm_manager.fs_region(i) {
             fs.lock().unwrap().set_shm_region(VirtioShmRegion {
@@ -1570,7 +1572,7 @@ fn attach_fs_devices(
 fn attach_console_devices(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
     console_output: Option<PathBuf>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1643,9 +1645,7 @@ fn attach_console_devices(
 
     vmm.exit_observers.push(console.clone());
 
-    if let Some(intc) = intc {
-        console.lock().unwrap().set_intc(intc);
-    }
+    console.lock().unwrap().set_intc(intc);
 
     event_manager
         .add_subscriber(console.clone())
@@ -1670,14 +1670,12 @@ fn attach_console_devices(
 fn attach_net_devices<'a>(
     vmm: &mut Vmm,
     net_devices: impl Iterator<Item = &'a Arc<Mutex<Net>>>,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
 ) -> Result<(), StartMicrovmError> {
     for net_device in net_devices {
         let id = net_device.lock().unwrap().id().to_string();
 
-        if let Some(ref intc) = intc {
-            net_device.lock().unwrap().set_intc(intc.clone());
-        }
+        net_device.lock().unwrap().set_intc(intc.clone());
 
         attach_mmio_device(
             vmm,
@@ -1693,7 +1691,7 @@ fn attach_unixsock_vsock_device(
     vmm: &mut Vmm,
     unix_vsock: &Arc<Mutex<Vsock>>,
     event_manager: &mut EventManager,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1703,9 +1701,7 @@ fn attach_unixsock_vsock_device(
 
     let id = String::from(unix_vsock.lock().unwrap().id());
 
-    if let Some(intc) = intc {
-        unix_vsock.lock().unwrap().set_intc(intc);
-    }
+    unix_vsock.lock().unwrap().set_intc(intc);
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(
@@ -1722,7 +1718,7 @@ fn attach_unixsock_vsock_device(
 fn attach_balloon_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1734,9 +1730,7 @@ fn attach_balloon_device(
 
     let id = String::from(balloon.lock().unwrap().id());
 
-    if let Some(intc) = intc {
-        balloon.lock().unwrap().set_intc(intc);
-    }
+    balloon.lock().unwrap().set_intc(intc);
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(
@@ -1753,16 +1747,14 @@ fn attach_balloon_device(
 fn attach_block_devices(
     vmm: &mut Vmm,
     block_devs: &BlockBuilder,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     for block in block_devs.list.iter() {
         let id = String::from(block.lock().unwrap().id());
 
-        if let Some(ref intc) = intc {
-            block.lock().unwrap().set_intc(intc.clone());
-        }
+        block.lock().unwrap().set_intc(intc.clone());
 
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_mmio_device(
@@ -1780,7 +1772,7 @@ fn attach_block_devices(
 fn attach_rng_device(
     vmm: &mut Vmm,
     event_manager: &mut EventManager,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -1792,9 +1784,7 @@ fn attach_rng_device(
 
     let id = String::from(rng.lock().unwrap().id());
 
-    if let Some(intc) = intc {
-        rng.lock().unwrap().set_intc(intc);
-    }
+    rng.lock().unwrap().set_intc(intc);
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(vmm, id, MmioTransport::new(vmm.guest_memory().clone(), rng))
@@ -1809,7 +1799,7 @@ fn attach_gpu_device(
     event_manager: &mut EventManager,
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
-    intc: Option<IrqChip>,
+    intc: IrqChip,
     virgl_flags: u32,
     #[cfg(target_os = "macos")] map_sender: Sender<MemoryMapping>,
 ) -> std::result::Result<(), StartMicrovmError> {
@@ -1830,9 +1820,7 @@ fn attach_gpu_device(
 
     let id = String::from(gpu.lock().unwrap().id());
 
-    if let Some(intc) = intc {
-        gpu.lock().unwrap().set_intc(intc);
-    }
+    gpu.lock().unwrap().set_intc(intc);
 
     if let Some(shm_region) = shm_manager.gpu_region() {
         gpu.lock().unwrap().set_shm_region(VirtioShmRegion {
@@ -1858,18 +1846,13 @@ fn attach_gpu_device(
 }
 
 #[cfg(feature = "snd")]
-fn attach_snd_device(
-    vmm: &mut Vmm,
-    intc: Option<IrqChip>,
-) -> std::result::Result<(), StartMicrovmError> {
+fn attach_snd_device(vmm: &mut Vmm, intc: IrqChip) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     let snd = Arc::new(Mutex::new(devices::virtio::Snd::new().unwrap()));
     let id = String::from(snd.lock().unwrap().id());
 
-    if let Some(intc) = intc {
-        snd.lock().unwrap().set_intc(intc);
-    }
+    snd.lock().unwrap().set_intc(intc);
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(vmm, id, MmioTransport::new(vmm.guest_memory().clone(), snd))
@@ -1905,15 +1888,16 @@ pub mod tests {
     fn test_create_vcpus_x86_64() {
         let vcpu_count = 2;
 
-        let (guest_memory, _arch_memory_info, _shm_manager, _payload_config) =
-            default_guest_memory(128).unwrap();
-        let mut vm = setup_vm(&guest_memory).unwrap();
-        setup_interrupt_controller(&mut vm).unwrap();
         let vcpu_config = VcpuConfig {
             vcpu_count,
             ht_enabled: false,
             cpu_template: None,
         };
+
+        let (guest_memory, _arch_memory_info, _shm_manager, _payload_config) =
+            default_guest_memory(128).unwrap();
+        let vm = setup_vm(&guest_memory, vcpu_count).unwrap();
+        let _kvmioapic = KvmIoapic::new(&vm.fd()).unwrap();
 
         // Dummy entry_addr, vcpus will not boot.
         let entry_addr = GuestAddress(0);

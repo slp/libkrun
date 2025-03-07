@@ -166,9 +166,9 @@ impl Gpio {
 
     fn trigger_gpio_interrupt(&self) {
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-        } else if let Err(e) = self.interrupt_evt.write(1) {
-            error!("Failed to signal used queue: {:?}", e);
+            if let Err(e) = intc.set_irq(self.irq_line, Some(&self.interrupt_evt)) {
+                warn!("Error signalling irq: {e:?}");
+            }
         }
     }
 }

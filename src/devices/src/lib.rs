@@ -14,6 +14,7 @@ use std::fmt;
 use std::io;
 
 mod bus;
+#[cfg(target_arch = "aarch64")]
 pub mod fdt;
 pub mod legacy;
 pub mod virtio;
@@ -54,12 +55,4 @@ impl fmt::Display for DeviceType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{self:?}")
     }
-}
-
-/// Type for passing information about the initrd in the guest memory.
-pub struct InitrdConfig {
-    /// Load address of initrd in guest memory
-    pub address: vm_memory::GuestAddress,
-    /// Size of initrd in guest memory
-    pub size: usize,
 }

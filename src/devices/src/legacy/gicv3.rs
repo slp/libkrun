@@ -398,11 +398,23 @@ impl IrqChipT for GicV3 {
         self.dist_size + self.redists_size
     }
 
-    fn set_irq(&self, irq_line: u32) {
-        assert!(irq_line < MAXIRQ, "[GICv3] intid out of range");
-        // TODO(p1-0tr): extract full MPID, but for now Aff0 will do
-        let mpid = self.gicd_irouter[irq_line as usize] & 0xff;
-        self.vcpu_list.set_irq_common(mpid, irq_line);
+    fn set_irq(
+        &self,
+        irq_line: Option<u32>,
+        interrupt_evt: Option<&EventFd>,
+    ) -> Result<(), DeviceError> {
+        if let Some(irq_line) = irq_line {
+            assert!(irq_line < MAXIRQ, "[GICv3] intid out of range");
+            // TODO(p1-0tr): extract full MPID, but for now Aff0 will do
+            let mpid = self.gicd_irouter[irq_line as usize] & 0xff;
+            self.vcpu_list.set_irq_common(mpid, irq_line);
+            Ok(())
+        } else {
+            Err(DeviceError::FailedSignalingUsedQueue(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IRQ not line configured",
+            )))
+        }
     }
 }
 

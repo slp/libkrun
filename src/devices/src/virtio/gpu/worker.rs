@@ -110,14 +110,9 @@ impl Worker {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-            Ok(())
-        } else {
-            self.interrupt_evt.write(1).map_err(|e| {
-                error!("Failed to signal used queue: {:?}", e);
-                DeviceError::FailedSignalingUsedQueue(e)
-            })
+            intc.set_irq(self.irq_line, Some(&self.interrupt_evt))?;
         }
+        Ok(())
     }
 
     fn process_gpu_command(

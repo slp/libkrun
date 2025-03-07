@@ -17,6 +17,7 @@ use utils::eventfd::EventFd;
 
 use crate::bus::BusDevice;
 use crate::legacy::{IrqChip, ReadableFd};
+use crate::Error as DeviceError;
 
 /* Registers */
 const UARTDR: u64 = 0;
@@ -50,7 +51,7 @@ const AMBA_ID_HIGH: u64 = 0x401;
 pub enum Error {
     BadWriteOffset(u64),
     DmaNotImplemented,
-    InterruptFailure(io::Error),
+    InterruptFailure(DeviceError),
     WriteAllFailure(io::Error),
     FlushFailure(io::Error),
 }
@@ -60,7 +61,7 @@ impl fmt::Display for Error {
         match self {
             Error::BadWriteOffset(offset) => write!(f, "pl011_write: Bad Write Offset: {offset}"),
             Error::DmaNotImplemented => write!(f, "pl011: DMA not implemented."),
-            Error::InterruptFailure(e) => write!(f, "Failed to trigger interrupt: {e}"),
+            Error::InterruptFailure(e) => write!(f, "Failed to trigger interrupt: {e:?}"),
             Error::WriteAllFailure(e) => write!(f, "Failed to write: {e}"),
             Error::FlushFailure(e) => write!(f, "Failed to flush: {e}"),
         }
@@ -192,7 +193,7 @@ impl Serial {
     }
 
     /// Queues raw bytes for the guest to read and signals the interrupt
-    pub fn queue_input_bytes(&mut self, c: &[u8]) -> io::Result<()> {
+    pub fn queue_input_bytes(&mut self, c: &[u8]) -> result::Result<(), DeviceError> {
         self.read_fifo.extend(c);
         self.read_count += c.len() as u32;
         self.flags &= !PL011_FLAG_RXFE;
@@ -305,13 +306,11 @@ impl Serial {
         Ok(())
     }
 
-    fn trigger_interrupt(&mut self) -> result::Result<(), io::Error> {
+    fn trigger_interrupt(&mut self) -> result::Result<(), DeviceError> {
         if let Some(intc) = &self.intc {
-            intc.lock().unwrap().set_irq(self.irq_line.unwrap());
-            Ok(())
-        } else {
-            self.interrupt_evt.write(1)
+            intc.set_irq(self.irq_line, Some(&self.interrupt_evt))?;
         }
+        Ok(())
     }
 }
 
@@ -410,7 +409,7 @@ impl Subscriber for Serial {
                 match input.read(&mut out[..]) {
                     Ok(count) => {
                         self.queue_input_bytes(&out[..count])
-                            .unwrap_or_else(|e| warn!("Serial error on input: {}", e));
+                            .unwrap_or_else(|e| warn!("Serial error on input: {:?}", e));
                     }
                     Err(e) => {
                         warn!("error while reading stdin: {:?}", e);

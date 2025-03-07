@@ -38,6 +38,14 @@ pub use crate::x86_64::{
 /// Type for returning public functions outcome.
 pub type Result<T> = result::Result<T, Error>;
 
+/// Type for passing information about the initrd in the guest memory.
+pub struct InitrdConfig {
+    /// Load address of initrd in guest memory
+    pub address: vm_memory::GuestAddress,
+    /// Size of initrd in guest memory
+    pub size: usize,
+}
+
 /// Default (smallest) memory page size for the supported architectures.
 pub const PAGE_SIZE: usize = 4096;
 

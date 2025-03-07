@@ -52,14 +52,14 @@ use crate::terminal::term_set_canonical_mode;
 use crate::vstate::VcpuEvent;
 use crate::vstate::{Vcpu, VcpuHandle, VcpuResponse, Vm};
 
-use arch::ArchMemoryInfo;
+use arch::{ArchMemoryInfo, InitrdConfig};
 #[cfg(target_os = "macos")]
 use crossbeam_channel::Sender;
 #[cfg(target_arch = "aarch64")]
 use devices::fdt;
 use devices::legacy::IrqChip;
 use devices::virtio::VmmExitObserver;
-use devices::{BusDevice, DeviceType, InitrdConfig};
+use devices::{BusDevice, DeviceType};
 use kernel::cmdline::Cmdline as KernelCmdline;
 use polly::event_manager::{self, EventManager, Subscriber};
 use utils::epoll::{EpollEvent, EventSet};
@@ -114,6 +114,7 @@ pub enum Error {
     RegisterMMIODevice(device_manager::mmio::Error),
     /// Write to the serial console failed.
     Serial(io::Error),
+    #[cfg(target_arch = "aarch64")]
     /// Cannot generate or write FDT
     SetupFDT(devices::fdt::Error),
     /// Cannot create Timer file descriptor.
@@ -154,6 +155,7 @@ impl Display for Error {
             LoadCommandline(e) => write!(f, "Cannot load command line: {e}"),
             RegisterMMIODevice(e) => write!(f, "Cannot add a device to the MMIO Bus. {e}"),
             Serial(e) => write!(f, "Error writing to the serial console: {e:?}"),
+            #[cfg(target_arch = "aarch64")]
             SetupFDT(e) => write!(f, "Error generating or writting FDT: {e:?}"),
             TimerFd(e) => write!(f, "Error creating timer fd: {e}"),
             Vcpu(e) => write!(f, "Vcpu error: {e}"),
@@ -267,7 +269,7 @@ impl Vmm {
     pub fn configure_system(
         &self,
         vcpus: &[Vcpu],
-        _intc: &Option<IrqChip>,
+        _intc: &IrqChip,
         initrd: &Option<InitrdConfig>,
         _smbios_oem_strings: &Option<Vec<String>>,
     ) -> Result<()> {
@@ -292,20 +294,17 @@ impl Vmm {
 
         #[cfg(target_arch = "aarch64")]
         {
-            if let Some(intc) = _intc.as_ref() {
-                let vcpu_mpidr = vcpus.iter().map(|cpu| cpu.get_mpidr()).collect();
-                let intc = intc.lock().unwrap();
-                fdt::create_fdt(
-                    &self.guest_memory,
-                    &self.arch_memory_info,
-                    vcpu_mpidr,
-                    self.kernel_cmdline.as_str(),
-                    self.mmio_device_manager.get_device_info(),
-                    &intc,
-                    initrd,
-                )
-                .map_err(Error::SetupFDT)?;
-            }
+            let vcpu_mpidr = vcpus.iter().map(|cpu| cpu.get_mpidr()).collect();
+            fdt::create_fdt(
+                &self.guest_memory,
+                &self.arch_memory_info,
+                vcpu_mpidr,
+                self.kernel_cmdline.as_str(),
+                self.mmio_device_manager.get_device_info(),
+                _intc,
+                initrd,
+            )
+            .map_err(Error::SetupFDT)?;
         }
 
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]

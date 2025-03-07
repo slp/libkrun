@@ -12,10 +12,9 @@ use std::{io, result};
 use crate::legacy::gic::GICDevice;
 use crate::legacy::IrqChipDevice;
 use crate::DeviceType;
-use crate::InitrdConfig;
 use arch::aarch64::get_fdt_addr;
 use arch::aarch64::layout::{GTIMER_HYP, GTIMER_PHYS, GTIMER_SEC, GTIMER_VIRT};
-use arch::ArchMemoryInfo;
+use arch::{ArchMemoryInfo, InitrdConfig};
 use vm_fdt::{Error as FdtError, FdtWriter};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
@@ -212,10 +211,10 @@ fn create_chosen_node(
 }
 
 fn create_gic_node(fdt: &mut FdtWriter, gic_device: &IrqChipDevice) -> Result<()> {
-    let gic_reg_prop = generate_prop64(gic_device.device_properties());
+    let gic_reg_prop = generate_prop64(&gic_device.device_properties());
 
     let intc_node = fdt.begin_node("intc")?;
-    fdt.property_string("compatible", gic_device.fdt_compatibility())?;
+    fdt.property_string("compatible", &gic_device.fdt_compatibility())?;
     fdt.property_null("interrupt-controller")?;
     // "interrupt-cells" field specifies the number of cells needed to encode an
     // interrupt source. The type shall be a <u32> and the value shall be 3 if no PPI affinity description
