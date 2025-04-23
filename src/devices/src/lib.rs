@@ -14,6 +14,9 @@ use std::fmt;
 use std::io;
 
 mod bus;
+
+#[cfg(feature = "gpu")]
+pub mod display;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub mod fdt;
 pub mod legacy;
