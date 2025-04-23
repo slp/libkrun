@@ -15,6 +15,7 @@ gpu = []
 snd = []
 virgl_resource_map2 = []
 nitro = [ "dep:nitro", "dep:nitro-enclaves" ]
+gtk_display = ["gpu"]
 
 [dependencies]
 crossbeam-channel = ">=0.5.15"
