@@ -5,8 +5,12 @@
  * Virtual Machine created and managed by libkrun.
  */
 
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
+#include <libkrun.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,10 +18,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <libkrun.h>
-#include <getopt.h>
-#include <stdbool.h>
-#include <assert.h>
 
 #define MAX_ARGS_LEN 4096
 #ifndef MAX_PATH
@@ -32,29 +32,41 @@ enum net_mode {
 static void print_help(char *const name)
 {
     fprintf(stderr,
-        "Usage: %s [OPTIONS] NEWROOT COMMAND [COMMAND_ARGS...]\n"
-        "OPTIONS: \n"
-        "        -h    --help                Show help\n"
-        "              --log=PATH            Write libkrun log to file or named pipe at PATH\n"
-        "              --color-log=PATH      Write libkrun log to file or named pipe at PATH, use color\n"
-        "              --net=NET_MODE        Set network mode\n"
-        "              --passt-socket=PATH   Instead of starting passt, connect to passt socket at PATH"
-        "NET_MODE can be either TSI (default) or PASST\n"
-        "\n"
-        "NEWROOT:      the root directory of the vm\n"
-        "COMMAND:      the command you want to execute in the vm\n"
-        "COMMAND_ARGS: arguments of COMMAND\n",
-        name
-    );
+            "Usage: %s [OPTIONS] NEWROOT COMMAND [COMMAND_ARGS...]\n"
+            "OPTIONS: \n"
+            "        -h    --help                Show help\n"
+            "              --log=PATH            Write libkrun log to file or "
+            "named pipe at PATH\n"
+            "              --color-log=PATH      Write libkrun log to file or "
+            "named pipe at PATH, use color\n"
+            "              --net=NET_MODE        Set network mode\n"
+            "              --passt-socket=PATH   Instead of starting passt, "
+            "connect to passt socket at PATH"
+            "NET_MODE can be either TSI (default) or PASST\n"
+            "              --display=DISPLAY     Add a display to the vm (can "
+            "be specified multiple times)\n"
+            "\n"
+            "DISPLAY:      string in the form 'display_id:width:height' (e.g. "
+            "'0:1920:1080')\n"
+            "NEWROOT:      the root directory of the vm\n"
+            "COMMAND:      the command you want to execute in the vm\n"
+            "COMMAND_ARGS: arguments of COMMAND\n",
+            name);
 }
 
 static const struct option long_options[] = {
-    { "help", no_argument, NULL, 'h' },
-    { "log", required_argument, NULL, 'L' },
-    { "color-log", required_argument, NULL, 'C' },
-    { "net_mode", required_argument, NULL, 'N' },
-    { "passt-socket", required_argument, NULL, 'P' },
-    { NULL, 0, NULL, 0 }
+    {"help", no_argument, NULL, 'h'},
+    {"log", required_argument, NULL, 'L'},
+    {"color-log", required_argument, NULL, 'C'},
+    {"net_mode", required_argument, NULL, 'N'},
+    {"passt-socket", required_argument, NULL, 'P'},
+    {"display", required_argument, NULL, 'D'},
+    {NULL, 0, NULL, 0}};
+
+struct display {
+    bool enabled;
+    uint32_t width;
+    uint32_t height;
 };
 
 struct cmdline {
@@ -65,9 +77,12 @@ struct cmdline {
     char const *passt_socket_path;
     char const *new_root;
     char *const *guest_argv;
+    bool enable_display_backend;
+    struct display displays[KRUN_MAX_DISPLAYS];
 };
 
-bool cmdline_set_log_target(struct cmdline *cmdline, const char *arg) {
+bool cmdline_set_log_target(struct cmdline *cmdline, const char *arg)
+{
     int fd = open(arg, O_WRONLY);
     if (fd < 0) {
         perror(arg);
@@ -77,6 +92,29 @@ bool cmdline_set_log_target(struct cmdline *cmdline, const char *arg) {
         close(cmdline->log_target);
     }
     cmdline->log_target = fd;
+
+    return true;
+}
+
+bool add_display(struct cmdline *cmdline, const char *arg)
+{
+    uint32_t index, width, height;
+
+    if (sscanf(arg, "%u:%u:%u", &index, &width, &height) != 3) {
+        fprintf(stderr, "Invalid value for --display\n", index);
+        return false;
+    }
+
+    if (index >= KRUN_MAX_DISPLAYS) {
+        fprintf(stderr, "Invalid display id: %u\n", index);
+        return false;
+    }
+
+    cmdline->enable_display_backend = true;
+    cmdline->displays[index].enabled = true;
+    cmdline->displays[index].width = width;
+    cmdline->displays[index].height = height;
+
     return true;
 }
 
@@ -92,13 +130,15 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         .new_root = NULL,
         .guest_argv = NULL,
         .log_target = KRUN_LOG_TARGET_DEFAULT,
-        .log_style = KRUN_LOG_STYLE_AUTO
+        .log_style = KRUN_LOG_STYLE_AUTO.enable_display_backend = false,
+        .displays = {0},
     };
 
     int option_index = 0;
     int c;
     // the '+' in optstring is a GNU extension that disables permutating argv
-    while ((c = getopt_long(argc, argv, "+h", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "+h", long_options, &option_index)) !=
+           -1) {
         switch (c) {
         case 'h':
             cmdline->show_help = true;
@@ -114,7 +154,7 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         case 'N':
             if (strcasecmp("TSI", optarg) == 0) {
                 cmdline->net_mode = NET_MODE_TSI;
-            } else if(strcasecmp("PASST", optarg) == 0) {
+            } else if (strcasecmp("PASST", optarg) == 0) {
                 cmdline->net_mode = NET_MODE_PASST;
             } else {
                 fprintf(stderr, "Unknown mode %s\n", optarg);
@@ -124,10 +164,18 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         case 'P':
             cmdline->passt_socket_path = optarg;
             break;
+        case 'D':
+            if (!add_display(cmdline, optarg)) {
+                return false;
+            }
+            break;
         case '?':
             return false;
         default:
-            fprintf(stderr, "internal argument parsing error (returned character code 0x%x)\n", c);
+            fprintf(stderr,
+                    "internal argument parsing error (returned character code "
+                    "0x%x)\n",
+                    c);
             return false;
         }
     }
@@ -190,25 +238,12 @@ int start_passt()
     }
 }
 
-
 int main(int argc, char *const argv[])
 {
-    const char *const envp[] =
-    {
-        "TEST=works",
-        0
-    };
-    const char *const port_map[] =
-    {
-        "18000:8000",
-        0
-    };
-    const char *const rlimits[] =
-    {
-        // RLIMIT_NPROC = 6
-        "6=4096:8192",
-        0
-    };
+    const char *const envp[] = {"TEST=works", 0};
+    const char *const port_map[] = {"18000:8000", 0};
+    const char *const rlimits[] = {// RLIMIT_NPROC = 6
+                                   "6=4096:8192", 0};
     int ctx_id;
     int err;
     int i;
@@ -221,13 +256,14 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (cmdline.show_help){
+    if (cmdline.show_help) {
         print_help(argv[0]);
         return 0;
     }
 
     // Set the log level to "warn".
-    err = krun_init_log(cmdline.log_target, KRUN_LOG_LEVEL_WARN, cmdline.log_style, 0);
+    err = krun_init_log(cmdline.log_target, KRUN_LOG_LEVEL_WARN,
+                        cmdline.log_style, 0);
     if (err) {
         errno = -err;
         perror("Error configuring log level");
@@ -245,11 +281,13 @@ int main(int argc, char *const argv[])
     // Configure the number of vCPUs (1) and the amount of RAM (512 MiB).
     if (err = krun_set_vm_config(ctx_id, 4, 4096)) {
         errno = -err;
-        perror("Error configuring the number of vCPUs and/or the amount of RAM");
+        perror(
+            "Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
     }
 
-    // Raise RLIMIT_NOFILE to the maximum allowed to create some room for virtio-fs
+    // Raise RLIMIT_NOFILE to the maximum allowed to create some room for
+    // virtio-fs
     getrlimit(RLIMIT_NOFILE, &rlim);
     rlim.rlim_cur = rlim.rlim_max;
     setrlimit(RLIMIT_NOFILE, &rlim);
@@ -261,11 +299,30 @@ int main(int argc, char *const argv[])
     }
 
     uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_DRM |
-	    VIRGLRENDERER_THREAD_SYNC | VIRGLRENDERER_USE_ASYNC_FENCE_CB;
+                           VIRGLRENDERER_THREAD_SYNC |
+                           VIRGLRENDERER_USE_ASYNC_FENCE_CB;
     if (err = krun_set_gpu_options(ctx_id, virgl_flags)) {
         errno = -err;
         perror("Error configuring gpu");
         return -1;
+    }
+
+    if (cmdline.enable_display_backend &&
+        (err = krun_set_display_backend_gtk(ctx_id))) {
+        errno = -err;
+        perror("Error enabling gtk display");
+        return -1;
+    }
+
+    for (int i = 0; i < KRUN_MAX_DISPLAYS; ++i) {
+        if (cmdline.displays[i].enabled) {
+            if (err = krun_set_display(ctx_id, i, cmdline.displays[i].width,
+                                       cmdline.displays[i].height)) {
+                errno = -err;
+                perror("Error adding a display");
+                return -1;
+            }
+        }
     }
 
     // Map port 18000 in the host to 8000 in the guest (if networking uses TSI)
@@ -278,7 +335,9 @@ int main(int argc, char *const argv[])
     } else {
         uint8_t mac[] = {0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee};
         if (cmdline.passt_socket_path != NULL) {
-            if (err = krun_add_net_unixstream(ctx_id, cmdline.passt_socket_path, -1, &mac[0], COMPAT_NET_FEATURES, 0)) {
+            if (err = krun_add_net_unixstream(ctx_id, cmdline.passt_socket_path,
+                                              -1, &mac[0], COMPAT_NET_FEATURES,
+                                              0)) {
                 errno = -err;
                 perror("Error configuring net mode");
                 return -1;
@@ -290,7 +349,8 @@ int main(int argc, char *const argv[])
                 return -1;
             }
 
-            if (err = krun_add_net_unixstream(ctx_id, NULL, passt_fd, &mac[0], COMPAT_NET_FEATURES, 0)) {
+            if (err = krun_add_net_unixstream(ctx_id, NULL, passt_fd, &mac[0],
+                                              COMPAT_NET_FEATURES, 0)) {
                 errno = -err;
                 perror("Error configuring net mode");
                 return -1;
@@ -312,8 +372,11 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    // Specify the path of the binary to be executed in the isolated context, relative to the root path.
-    if (err = krun_set_exec(ctx_id, cmdline.guest_argv[0], (const char* const*) &cmdline.guest_argv[1], &envp[0])) {
+    // Specify the path of the binary to be executed in the isolated context,
+    // relative to the root path.
+    if (err = krun_set_exec(ctx_id, cmdline.guest_argv[0],
+                            (const char *const *)&cmdline.guest_argv[1],
+                            &envp[0])) {
         errno = -err;
         perror("Error configuring the parameters for the executable to be run");
         return -1;
@@ -325,8 +388,8 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    // Start and enter the microVM. Unless there is some error while creating the microVM
-    // this function never returns.
+    // Start and enter the microVM. Unless there is some error while creating
+    // the microVM this function never returns.
     if (err = krun_start_enter(ctx_id)) {
         errno = -err;
         perror("Error creating the microVM");
