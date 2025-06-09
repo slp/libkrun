@@ -190,21 +190,24 @@ impl MMIODeviceManager {
         vm.register_irqfd(serial.lock().unwrap().interrupt_evt(), self.irq)
             .map_err(Error::RegisterIrqFd)?;
 
+        let mmio_base = 0x9000000;
+
+        println!("insert serial at 0x{:x}", mmio_base);
         self.bus
-            .insert(serial, self.mmio_base, MMIO_LEN)
+            .insert(serial, mmio_base, MMIO_LEN)
             .map_err(Error::BusError)?;
 
         cmdline
             .insert(
                 "earlycon",
                 #[cfg(target_arch = "aarch64")]
-                &format!("pl011,mmio32,0x{:08x}", self.mmio_base),
+                &format!("pl011,mmio32,0x{:08x}", mmio_base),
                 #[cfg(target_arch = "riscv64")]
                 &format!("uart,mmio,0x{:08x}", self.mmio_base),
             )
             .map_err(Error::Cmdline)?;
 
-        let ret = self.mmio_base;
+        let ret = mmio_base;
         self.id_to_dev_info.insert(
             (DeviceType::Serial, DeviceType::Serial.to_string()),
             MMIODeviceInfo {
