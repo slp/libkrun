@@ -90,7 +90,7 @@ use vm_memory::GuestRegionMmap;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 
 #[cfg(feature = "efi")]
-static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/KRUN_EFI.silent.fd");
+static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/u-boot.bin");
 
 /// Errors associated with starting the instance.
 #[derive(Debug)]
@@ -621,9 +621,9 @@ pub fn build_microvm(
         Some(setup_serial_device(
             event_manager,
             None,
-            None,
+            //None,
             // Uncomment this to get EFI output when debugging EDK2.
-            //Some(Box::new(io::stdout())),
+            Some(Box::new(io::stdout())),
         )?)
     } else {
         None
@@ -777,16 +777,21 @@ pub fn build_microvm(
         pio_device_manager,
     };
 
+    #[cfg(feature = "blk")]
+    attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
+    /*
     attach_console_devices(
         &mut vmm,
         event_manager,
         intc.clone(),
         vm_resources.console_output.clone(),
     )?;
+    */
+    attach_android_devices(&mut vmm, event_manager, intc.clone())?;
 
     #[cfg(not(feature = "tee"))]
     let export_table: Option<ExportTable> = if cfg!(feature = "gpu") {
@@ -825,8 +830,6 @@ pub fn build_microvm(
         #[cfg(target_os = "macos")]
         _sender,
     )?;
-    #[cfg(feature = "blk")]
-    attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
     if let Some(vsock) = vm_resources.vsock.get() {
         attach_unixsock_vsock_device(&mut vmm, vsock, event_manager, intc.clone())?;
         #[cfg(not(feature = "net"))]
@@ -1573,7 +1576,8 @@ fn attach_mmio_device(
     #[cfg(target_os = "linux")]
     let (_mmio_base, _irq) =
         vmm.mmio_device_manager
-            .register_mmio_device(vmm.vm.fd(), device, type_id, id)?;
+            .register_mmio_device(vmm.vm.fd(), device, type_id, id.clone())?;
+    println!("id={} at 0x{:x}", id, _mmio_base);
     #[cfg(target_os = "macos")]
     let (_mmio_base, _irq) = vmm
         .mmio_device_manager
@@ -1736,6 +1740,143 @@ fn attach_console_devices(
         MmioTransport::new(vmm.guest_memory().clone(), console),
     )
     .map_err(RegisterFsDevice)?;
+
+    Ok(())
+}
+
+fn attach_android_devices(
+    vmm: &mut Vmm,
+    event_manager: &mut EventManager,
+    intc: IrqChip,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let mut hvc_num = 0;
+
+    {
+        let file = File::options()
+            .append(true)
+            .open("/home/slp/aaos-images-arm64/qemu/kernel-log-pipe")
+            .unwrap();
+
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_file(file).unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+
+    {
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_null().unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+
+    {
+        let file_in = File::open("/home/slp/aaos-images-arm64/qemu/logcat-pipe").unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open("/home/slp/aaos-images-arm64/qemu/logcat-pipe")
+            .unwrap();
+
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+
+    let pipes = vec![
+        "/home/slp/aaos-images-arm64/qemu/keymaster_fifo_vm",
+        "/home/slp/aaos-images-arm64/qemu/gatekeeper_fifo_vm",
+        "/home/slp/aaos-images-arm64/qemu/bt_fifo_vm",
+    ];
+
+    for pipe in pipes {
+        println!("adding pipe {}", pipe);
+
+        let file_in = File::open(format!("{pipe}.in")).unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open(format!("{pipe}.out"))
+            .unwrap();
+
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
 
     Ok(())
 }

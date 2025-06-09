@@ -42,6 +42,20 @@ pub fn input_empty() -> Result<Box<dyn PortInput + Send>, nix::Error> {
     Ok(Box::new(PortInputEmpty {}))
 }
 
+pub fn output_null() -> Result<Box<dyn PortOutput + Send>, nix::Error> {
+    Ok(Box::new(PortOutputNull {}))
+}
+
+pub fn input_file(file: &File) -> Result<Box<dyn PortInput + Send>, nix::Error> {
+    input_to_raw_fd_dup(file.as_raw_fd())
+}
+
+pub fn input_to_raw_fd_dup(fd: RawFd) -> Result<Box<dyn PortInput + Send>, nix::Error> {
+    let fd = dup_raw_fd_into_owned(fd)?;
+    make_non_blocking(&fd)?;
+    Ok(Box::new(PortInputFd(fd)))
+}
+
 pub fn output_file(file: File) -> Result<Box<dyn PortOutput + Send>, nix::Error> {
     output_to_raw_fd_dup(file.as_raw_fd())
 }
@@ -114,6 +128,7 @@ impl AsRawFd for PortOutputFd {
 
 impl PortOutput for PortOutputFd {
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
+        info!("write_volatile");
         self.0.write_volatile(buf).map_err(|e| match e {
             VolatileMemoryError::IOError(e) => e,
             e => {
@@ -124,6 +139,7 @@ impl PortOutput for PortOutputFd {
     }
 
     fn wait_until_writable(&self) {
+        info!("wait_until_writable");
         let mut poll_fds = [PollFd::new(self.as_raw_fd(), PollFlags::POLLOUT)];
         poll(&mut poll_fds, -1).expect("Failed to poll");
     }
@@ -262,4 +278,26 @@ impl PortInput for PortInputEmpty {
             std::thread::sleep(std::time::Duration::MAX);
         }
     }
+}
+
+pub struct PortOutputNull {}
+
+impl PortOutputNull {
+    pub fn new() -> Self {
+        PortOutputNull {}
+    }
+}
+
+impl Default for PortOutputNull {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PortOutput for PortOutputNull {
+    fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
+        Ok(0)
+    }
+
+    fn wait_until_writable(&self) {}
 }

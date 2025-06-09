@@ -195,7 +195,7 @@ fn create_chosen_node(
     initrd: &Option<InitrdConfig>,
 ) -> Result<()> {
     let chosen_node = fdt.begin_node("chosen")?;
-    fdt.property_string("bootargs", cmdline)?;
+    fdt.property_string("bootargs","mac80211_hwsim.radios=\"0\" vmw_vsock_virtio_transport_common.virtio_transport_max_vsock_pkt_buf_size=\"16384\" console=ttynull stack_depot_disable=on cgroup_disable=pressure kasan.page_alloc.sample=10 kasan.stacktrace=off kvm-arm.mode=protected bootconfig ioremap_guard  printk.devkmsg=on audit=1 panic=-1 8250.nr_uarts=1 cma=0 firmware_class.path=/vendor/etc/ loop.max_part=7 init=/init kunit.enable=1 bootconfig  console=pl11 earlycon=pl011,mmio32,0x9000000")?;
 
     if let Some(initrd_config) = initrd {
         fdt.property_u64("linux,initrd-start", initrd_config.address.raw_value())?;
