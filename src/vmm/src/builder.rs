@@ -1719,7 +1719,9 @@ fn attach_console_devices(
         ports
     };
 
-    let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+    let console = Arc::new(Mutex::new(
+        devices::virtio::Console::new("hvc0".to_string(), ports).unwrap(),
+    ));
 
     vmm.exit_observers.push(console.clone());
 
@@ -1764,7 +1766,9 @@ fn attach_android_devices(
             output: Some(port_io::output_file(file).unwrap()),
         }];
 
-        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
 
         console.lock().unwrap().set_intc(intc.clone());
 
@@ -1784,12 +1788,19 @@ fn attach_android_devices(
     }
 
     {
+        let file = File::options()
+            .append(true)
+            .open("/home/slp/aaos-images-arm64/qemu/hvc1")
+            .unwrap();
+
         let ports = vec![PortDescription::Console {
             input: Some(port_io::input_empty().unwrap()),
-            output: Some(port_io::output_null().unwrap()),
+            output: Some(port_io::output_file(file).unwrap()),
         }];
 
-        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
 
         console.lock().unwrap().set_intc(intc.clone());
 
@@ -1820,7 +1831,9 @@ fn attach_android_devices(
             output: Some(port_io::output_file(file_out).unwrap()),
         }];
 
-        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
 
         console.lock().unwrap().set_intc(intc.clone());
 
@@ -1859,7 +1872,9 @@ fn attach_android_devices(
             output: Some(port_io::output_file(file_out).unwrap()),
         }];
 
-        let console = Arc::new(Mutex::new(devices::virtio::Console::new(ports).unwrap()));
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
 
         console.lock().unwrap().set_intc(intc.clone());
 

@@ -184,6 +184,18 @@ pub struct virtio_gpu_rect {
 }
 unsafe impl ByteValued for virtio_gpu_rect {}
 
+// VIRTIO_GPU_CMD_GET_EDID
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct virtio_gpu_get_edid {
+    pub scanout: u32,
+    pub padding: u32,
+}
+
+// SAFETY: The layout of the structure is fixed and can be initialized by
+// reading its content from byte array.
+unsafe impl ByteValued for virtio_gpu_get_edid {}
+
 /* VIRTIO_GPU_CMD_RESOURCE_UNREF */
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
 #[repr(C)]
@@ -280,6 +292,21 @@ pub struct virtio_gpu_resp_display_info {
     pub pmodes: [virtio_gpu_display_one; VIRTIO_GPU_MAX_SCANOUTS as usize],
 }
 unsafe impl ByteValued for virtio_gpu_resp_display_info {}
+
+const EDID_BLOB_MAX_SIZE: usize = 1024;
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct virtio_gpu_resp_edid {
+    pub hdr: virtio_gpu_ctrl_hdr,
+    pub size: u32,
+    pub padding: u32,
+    pub edid: [u8; EDID_BLOB_MAX_SIZE],
+}
+
+// SAFETY: The layout of the structure is fixed and can be initialized by
+// reading its content from byte array.
+unsafe impl ByteValued for virtio_gpu_resp_edid {}
 
 /* data passed in the control vq, 3d related */
 
@@ -544,6 +571,7 @@ pub const VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 #[derive(Copy, Clone)]
 pub enum GpuCommand {
     GetDisplayInfo,
+    GetEdid(virtio_gpu_get_edid),
     ResourceCreate2d(virtio_gpu_resource_create_2d),
     ResourceUnref(virtio_gpu_resource_unref),
     SetScanout(virtio_gpu_set_scanout),
@@ -593,6 +621,7 @@ impl fmt::Debug for GpuCommand {
         use self::GpuCommand::*;
         match self {
             GetDisplayInfo => f.debug_struct("GetDisplayInfo").finish(),
+            GetEdid(_info) => f.debug_struct("GetEdid").finish(),
             ResourceCreate2d(_info) => f.debug_struct("ResourceCreate2d").finish(),
             ResourceUnref(_info) => f.debug_struct("ResourceUnref").finish(),
             SetScanout(_info) => f.debug_struct("SetScanout").finish(),
@@ -630,6 +659,7 @@ impl GpuCommand {
         let hdr = cmd.read_obj::<virtio_gpu_ctrl_hdr>()?;
         let cmd = match hdr.type_ {
             VIRTIO_GPU_CMD_GET_DISPLAY_INFO => GetDisplayInfo,
+            VIRTIO_GPU_CMD_GET_EDID => GetEdid(cmd.read_obj()?),
             VIRTIO_GPU_CMD_RESOURCE_CREATE_2D => ResourceCreate2d(cmd.read_obj()?),
             VIRTIO_GPU_CMD_RESOURCE_UNREF => ResourceUnref(cmd.read_obj()?),
             VIRTIO_GPU_CMD_SET_SCANOUT => SetScanout(cmd.read_obj()?),
@@ -672,6 +702,10 @@ pub struct GpuResponsePlaneInfo {
 pub enum GpuResponse {
     OkNoData,
     OkDisplayInfo(Vec<(u32, u32, bool)>),
+    OkEdid {
+        /// The EDID display data blob (as specified by VESA)
+        blob: Box<[u8]>,
+    },
     OkCapsetInfo {
         capset_id: u32,
         version: u32,
@@ -784,6 +818,17 @@ impl GpuResponse {
                 resp.write_obj(disp_info)?;
                 size_of_val(&disp_info)
             }
+            GpuResponse::OkEdid { ref blob } => {
+                let mut edid_info = virtio_gpu_resp_edid {
+                    hdr,
+                    size: blob.len() as u32,
+                    edid: [0; EDID_BLOB_MAX_SIZE],
+                    padding: u32::default(),
+                };
+                edid_info.edid.copy_from_slice(blob);
+                resp.write_obj(edid_info)?;
+                size_of_val(&edid_info)
+            }
             GpuResponse::OkCapsetInfo {
                 capset_id,
                 version,
@@ -866,6 +911,7 @@ impl GpuResponse {
     pub fn get_type(&self) -> u32 {
         match self {
             GpuResponse::OkNoData => VIRTIO_GPU_RESP_OK_NODATA,
+            GpuResponse::OkEdid { blob: _ } => VIRTIO_GPU_RESP_OK_EDID,
             GpuResponse::OkDisplayInfo(_) => VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
             GpuResponse::OkCapsetInfo { .. } => VIRTIO_GPU_RESP_OK_CAPSET_INFO,
             GpuResponse::OkCapset(_) => VIRTIO_GPU_RESP_OK_CAPSET,

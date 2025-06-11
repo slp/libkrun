@@ -407,6 +407,7 @@ impl VirtioGpu {
         width: u32,
         height: u32,
     ) -> VirtioGpuResult {
+        println!("XXX - set_scanout");
         let scanout = self
             .scanouts
             .get_mut(scanout_id as usize)
@@ -425,7 +426,7 @@ impl VirtioGpu {
 
         // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
         if resource_id == 0 {
-            debug!("Disabling scanout {scanout_id:?}");
+            println!("Disabling scanout {scanout_id:?}");
             *scanout = None;
             self.display_backend.disable_scanout(scanout_id)?;
             return Ok(OkNoData);
@@ -532,7 +533,56 @@ impl VirtioGpu {
             })
             .collect();
 
+        debug!("display_info: {:?}", display_info);
+
         Ok(OkDisplayInfo(display_info))
+    }
+
+    pub fn get_edid(&self, scanout: u32) -> VirtioGpuResult {
+        let edid = vec![
+            0, 255, 255, 255, 255, 255, 255, 0, 73, 20, 52, 18, 0, 0, 0, 0, 42, 24, 1, 4, 165, 32,
+            24, 120, 6, 238, 145, 163, 84, 76, 153, 38, 15, 80, 84, 33, 8, 0, 225, 192, 209, 192,
+            209, 0, 169, 64, 179, 0, 149, 0, 129, 128, 129, 64, 55, 40, 0, 192, 81, 192, 33, 48,
+            64, 38, 68, 64, 69, 243, 16, 0, 0, 24, 0, 0, 0, 247, 0, 10, 0, 64, 130, 0, 40, 32, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 253, 0, 50, 125, 30, 160, 255, 1, 10, 32, 32, 32, 32, 32, 32,
+            0, 0, 0, 252, 0, 81, 69, 77, 85, 32, 77, 111, 110, 105, 116, 111, 114, 10, 1, 29, 2, 3,
+            11, 0, 70, 125, 101, 96, 89, 31, 97, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0,
+        ];
+
+        Ok(OkEdid {
+            blob: Box::from(&edid[..edid.len()]),
+        })
     }
 
     /// Copies data to host resource from the attached iovecs. Can also be used to flush caches.
@@ -559,7 +609,8 @@ impl VirtioGpu {
         _transfer: Transfer3D,
         _buf: Option<VolatileSlice>,
     ) -> VirtioGpuResult {
-        panic!("virtio_gpu: transfer_read unimplemented");
+        //panic!("virtio_gpu: transfer_read unimplemented");
+        Ok(OkNoData)
     }
 
     /// Attaches backing memory to the given resource, represented by a `Vec` of `(address, size)`
@@ -600,6 +651,7 @@ impl VirtioGpu {
 
     /// Gets rutabaga's capset information associated with `index`.
     pub fn get_capset_info(&self, index: u32) -> VirtioGpuResult {
+        info!("get_capset_info");
         let (capset_id, version, size) = self.rutabaga.get_capset_info(index)?;
         Ok(OkCapsetInfo {
             capset_id,
@@ -610,6 +662,7 @@ impl VirtioGpu {
 
     /// Gets a capset from rutabaga.
     pub fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
+        info!("get_capset");
         let capset = self.rutabaga.get_capset(capset_id, version)?;
         Ok(OkCapset(capset))
     }
@@ -621,6 +674,7 @@ impl VirtioGpu {
         context_init: u32,
         context_name: Option<&str>,
     ) -> VirtioGpuResult {
+        info!("create_context");
         self.rutabaga
             .create_context(ctx_id, context_init, context_name)?;
         Ok(OkNoData)

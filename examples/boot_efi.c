@@ -5,18 +5,18 @@
  * Virtual Machine created and managed by libkrun.
  */
 
+#include <assert.h>
 #include <errno.h>
+#include <getopt.h>
+#include <libkrun.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <libkrun.h>
-#include <getopt.h>
-#include <stdbool.h>
-#include <assert.h>
-#include <pthread.h>
 
 #define MAX_ARGS_LEN 4096
 #ifndef MAX_PATH
@@ -25,22 +25,21 @@
 
 static void print_help(char *const name)
 {
-    fprintf(stderr,
+    fprintf(
+        stderr,
         "Usage: %s [OPTIONS] DISK\n"
         "OPTIONS: \n"
         "        -h    --help                Show help\n"
         "              --passt-socket=PATH   Connect to passt socket at PATH"
         "\n"
         "DISK:   path to the vm's disk image in raw format\n",
-        name
-    );
+        name);
 }
 
 static const struct option long_options[] = {
-    { "help", no_argument, NULL, 'h' },
-    { "passt-socket", required_argument, NULL, 'P' },
-    { NULL, 0, NULL, 0 }
-};
+    {"help", no_argument, NULL, 'h'},
+    {"passt-socket", required_argument, NULL, 'P'},
+    {NULL, 0, NULL, 0}};
 
 struct cmdline {
     bool show_help;
@@ -62,7 +61,8 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
     int option_index = 0;
     int c;
     // the '+' in optstring is a GNU extension that disables permutating argv
-    while ((c = getopt_long(argc, argv, "+h", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "+h", long_options, &option_index)) !=
+           -1) {
         switch (c) {
         case 'h':
             cmdline->show_help = true;
@@ -73,7 +73,10 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         case '?':
             return false;
         default:
-            fprintf(stderr, "internal argument parsing error (returned character code 0x%x)\n", c);
+            fprintf(stderr,
+                    "internal argument parsing error (returned character code "
+                    "0x%x)\n",
+                    c);
             return false;
         }
     }
@@ -103,7 +106,7 @@ int connect_to_passt(char *socket_path)
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
-    if (connect(socket_fd, (const struct sockaddr *) &addr, sizeof(addr)) < 0) {
+    if (connect(socket_fd, (const struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("Failed to bind passt socket");
         return -1;
     }
@@ -111,13 +114,13 @@ int connect_to_passt(char *socket_path)
     return socket_fd;
 }
 
-#define SHUTDOWN_SOCK_PATH  "/tmp/krun_shutdown.sock"
+#define SHUTDOWN_SOCK_PATH "/tmp/krun_shutdown.sock"
 
 void *listen_shutdown_request(void *opaque)
 {
     int server_sock, client_sock, len, ret;
     int bytes_rec = 0;
-    int shutdown_efd = (int) opaque;
+    int shutdown_efd = (int)opaque;
     char buf[8];
     struct sockaddr_un server_sockaddr;
     struct sockaddr_un client_sockaddr;
@@ -125,7 +128,7 @@ void *listen_shutdown_request(void *opaque)
     memset(&client_sockaddr, 0, sizeof(struct sockaddr_un));
 
     server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_sock == -1){
+    if (server_sock == -1) {
         perror("Error creating socket");
         exit(1);
     }
@@ -135,23 +138,24 @@ void *listen_shutdown_request(void *opaque)
     len = sizeof(server_sockaddr);
 
     unlink(SHUTDOWN_SOCK_PATH);
-    ret = bind(server_sock, (struct sockaddr *) &server_sockaddr, len);
-    if (ret == -1){
+    ret = bind(server_sock, (struct sockaddr *)&server_sockaddr, len);
+    if (ret == -1) {
         perror("Error binding socket");
         close(server_sock);
         exit(1);
     }
 
     ret = listen(server_sock, 1);
-    if (ret == -1){
+    if (ret == -1) {
         perror("Error listening on socket");
         close(server_sock);
         exit(1);
     }
 
     while (1) {
-        client_sock = accept(server_sock, (struct sockaddr *) &client_sockaddr, &len);
-        if (client_sock == -1){
+        client_sock =
+            accept(server_sock, (struct sockaddr *)&client_sockaddr, &len);
+        if (client_sock == -1) {
             perror("Error accepting connection");
             close(server_sock);
             close(client_sock);
@@ -180,7 +184,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (cmdline.show_help){
+    if (cmdline.show_help) {
         print_help(argv[0]);
         return 0;
     }
@@ -202,33 +206,77 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 4, 4096)) {
+    if (err = krun_set_vm_config(ctx_id, 8, 2048)) {
         errno = -err;
-        perror("Error configuring the number of vCPUs and/or the amount of RAM");
+        perror(
+            "Error configuring the number of vCPUs and/or the amount of RAM");
         return -1;
     }
 
-    if (err = krun_add_disk(ctx_id, "vda", "/home/slp/aaos-images-arm64/qemu/system.img", false)) {
-        errno = -err;
-        perror("Error configuring disk image");
-        return -1;
-    }
-
-    if (err = krun_add_disk(ctx_id, "vdb", "/home/slp/aaos-images-arm64/qemu/properties.img", false)) {
+    if (err = krun_add_disk(ctx_id, "vda",
+                            "/home/slp/aaos-images-arm64/qemu/system.img",
+                            false)) {
         errno = -err;
         perror("Error configuring disk image");
         return -1;
     }
 
-    uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_DRM |
-            VIRGLRENDERER_THREAD_SYNC | VIRGLRENDERER_USE_ASYNC_FENCE_CB;
+    if (err = krun_add_disk(
+            ctx_id, "vdb",
+            "/home/slp/aaos-images-arm64/qemu/properties_virgl.img", false)) {
+        errno = -err;
+        perror("Error configuring disk image");
+        return -1;
+    }
+
+    uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_USE_GLES |
+                           VIRGLRENDERER_USE_SURFACELESS |
+                           VIRGLRENDERER_THREAD_SYNC |
+                           VIRGLRENDERER_USE_ASYNC_FENCE_CB;
     if (err = krun_set_gpu_options(ctx_id, virgl_flags)) {
         errno = -err;
         perror("Error configuring gpu");
         return -1;
     }
 
-#if 0
+    if ((err = krun_set_display_backend_gtk(ctx_id))) {
+        errno = -err;
+        perror("Error enabling gtk display");
+        return -1;
+    }
+
+    if (err = krun_set_display(ctx_id, 0, 1920, 1080)) {
+        errno = -err;
+        perror("Error adding a display");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port(
+             ctx_id, 6800,
+             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_6800"))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port(
+             ctx_id, 9600,
+             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_9600"))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port2(
+             ctx_id, 5555,
+             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_5555",
+             true))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
+#if 1
     int passt_fd = connect_to_passt(cmdline.passt_socket_path);
 
     if (passt_fd < 0) {
@@ -248,12 +296,12 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    // Spawn a thread to listen on "/tmp/krun_shutdown.sock" for a request to send
-    // a shutdown signal to the guest.
-    pthread_create(&thread, NULL, listen_shutdown_request, (void*) efd);
+    // Spawn a thread to listen on "/tmp/krun_shutdown.sock" for a request to
+    // send a shutdown signal to the guest.
+    pthread_create(&thread, NULL, listen_shutdown_request, (void *)efd);
 
-    // Start and enter the microVM. Unless there is some error while creating the microVM
-    // this function never returns.
+    // Start and enter the microVM. Unless there is some error while creating
+    // the microVM this function never returns.
     if (err = krun_start_enter(ctx_id)) {
         errno = -err;
         perror("Error creating the microVM");

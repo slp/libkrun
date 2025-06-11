@@ -7,6 +7,7 @@ use gtk4::gdk;
 use std::thread;
 use utils::pollable_channel::{pollable_channel, PollableChannelSender};
 
+#[derive(Debug)]
 enum DisplayEvent {
     ConfigureScanout {
         scanout_id: u32,
@@ -33,13 +34,13 @@ pub struct DisplayBackendGtk {
 fn resource_format_into_gdk(format: GpuResourceFormat) -> gdk::MemoryFormat {
     match format {
         GpuResourceFormat::BGRA => gdk::MemoryFormat::B8g8r8a8,
-        GpuResourceFormat::BGRX => gdk::MemoryFormat::B8g8r8x8,
+        GpuResourceFormat::BGRX => gdk::MemoryFormat::B8g8r8a8,
         GpuResourceFormat::ARGB => gdk::MemoryFormat::A8r8g8b8,
-        GpuResourceFormat::XRGB => gdk::MemoryFormat::X8r8g8b8,
+        GpuResourceFormat::XRGB => gdk::MemoryFormat::A8r8g8b8,
         GpuResourceFormat::RGBA => gdk::MemoryFormat::R8g8b8a8,
-        GpuResourceFormat::XBGR => gdk::MemoryFormat::X8b8g8r8,
+        GpuResourceFormat::XBGR => gdk::MemoryFormat::A8b8g8r8,
         GpuResourceFormat::ABGR => gdk::MemoryFormat::A8b8g8r8,
-        GpuResourceFormat::RGBX => gdk::MemoryFormat::R8g8b8x8,
+        GpuResourceFormat::RGBX => gdk::MemoryFormat::R8g8b8a8,
     }
 }
 
@@ -70,6 +71,7 @@ impl DisplayBackend for DisplayBackendGtk {
         height: u32,
         format: GpuResourceFormat,
     ) -> Result<(), DisplayBackendError> {
+        println!("configure_scanout");
         check_scanout_id(self, scanout_id)?;
         let Ok(width) = width.try_into() else {
             warn!("Display width out of range");

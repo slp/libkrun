@@ -128,7 +128,7 @@ impl AsRawFd for PortOutputFd {
 
 impl PortOutput for PortOutputFd {
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
-        info!("write_volatile");
+        //info!("write_volatile");
         self.0.write_volatile(buf).map_err(|e| match e {
             VolatileMemoryError::IOError(e) => e,
             e => {
@@ -139,7 +139,7 @@ impl PortOutput for PortOutputFd {
     }
 
     fn wait_until_writable(&self) {
-        info!("wait_until_writable");
+        //info!("wait_until_writable");
         let mut poll_fds = [PollFd::new(self.as_raw_fd(), PollFlags::POLLOUT)];
         poll(&mut poll_fds, -1).expect("Failed to poll");
     }
@@ -296,7 +296,7 @@ impl Default for PortOutputNull {
 
 impl PortOutput for PortOutputNull {
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
-        Ok(0)
+        Ok(buf.len())
     }
 
     fn wait_until_writable(&self) {}

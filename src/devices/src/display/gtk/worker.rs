@@ -9,8 +9,8 @@ use gtk4::{
     gio::{ActionEntry, Cancellable, SimpleActionGroup},
     glib::{self, source, Bytes, ControlFlow, IOCondition},
     prelude::*,
-    AlertDialog, Align, Button, EventControllerMotion, HeaderBar, Overlay, Picture,
-    Revealer, RevealerTransitionType, Window,
+    AlertDialog, Align, Button, EventControllerMotion, HeaderBar, Overlay, Picture, Revealer,
+    RevealerTransitionType, Window,
 };
 
 struct Scanout {
@@ -209,6 +209,7 @@ fn build_overlay(window: &Window) -> Overlay {
 }
 
 pub fn gtk_display_main_loop(rx: PollableChannelReciever<DisplayEvent>, displays: DisplayInfoList) {
+    println!("gtk init");
     gtk4::init().expect("Failed to initialize GTK");
     let main_loop = glib::MainLoop::new(None, false);
 
@@ -221,11 +222,13 @@ pub fn gtk_display_main_loop(rx: PollableChannelReciever<DisplayEvent>, displays
             .unwrap_or_else(|| "libkrun".to_string())
     };
 
+    println!("fd_add_local");
     source::unix_fd_add_local(rx.as_raw_fd(), IOCondition::IN, move |_, _| {
         let Some(msg) = rx.try_recv().unwrap() else {
             return ControlFlow::Continue;
         };
 
+        //println!("received msg {:?}", msg);
         // The scanout_id validity is checked by DisplayBackendGtk, so we just assume it is valid
         // here
         match msg {
@@ -235,6 +238,7 @@ pub fn gtk_display_main_loop(rx: PollableChannelReciever<DisplayEvent>, displays
                 height,
                 format,
             } => {
+                println!("ConfigureScanout");
                 let display_info = displays[scanout_id as usize]
                     .as_ref()
                     .expect("Invalid scanout_id");

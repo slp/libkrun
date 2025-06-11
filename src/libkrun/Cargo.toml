@@ -14,6 +14,7 @@ efi = [ "blk", "net" ]
 gpu = []
 snd = []
 virgl_resource_map2 = []
+virgl_resource_next = []
 gtk_display = ["gpu"]
 
 [dependencies]

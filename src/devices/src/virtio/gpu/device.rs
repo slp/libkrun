@@ -29,9 +29,10 @@ pub(crate) const CUR_INDEX: usize = 1;
 // Supported features.
 pub(crate) const AVAIL_FEATURES: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1)
     | (1u64 << uapi::VIRTIO_GPU_F_VIRGL)
-    | (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_UUID)
-    | (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB)
-    | (1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT);
+    //| (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_UUID)
+    //| (1u64 << uapi::VIRTIO_GPU_F_RESOURCE_BLOB)
+    | (1u64 << uapi::VIRTIO_GPU_F_EDID);
+//| (1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT);
 
 pub struct Gpu {
     pub(crate) queue_ctl: Arc<Mutex<VirtQueue>>,
@@ -245,8 +246,8 @@ impl VirtioDevice for Gpu {
         let config = virtio_gpu_config {
             events_read: 0,
             events_clear: 0,
-            num_scanouts: self.num_scanouts,
-            num_capsets: 5,
+            num_scanouts: 1,
+            num_capsets: 2,
         };
 
         let config_slice = config.as_slice();

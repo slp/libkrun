@@ -27,6 +27,7 @@ impl Console {
     }
 
     fn notify_port_queue_event(&mut self, queue_index: usize) {
+        info!("{}: queue_event", self.id);
         let (direction, port_id) = queue_idx_to_port_id(queue_index);
         match direction {
             QueueDirection::Rx => {
