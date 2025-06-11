@@ -810,6 +810,9 @@ pub fn build_microvm(
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
+    #[cfg(not(feature = "tee"))]
+    attach_input_device(&mut vmm, event_manager, intc.clone())?;
+
     /*
     attach_console_devices(
         &mut vmm,
@@ -2072,6 +2075,36 @@ fn attach_rng_device(
 
     Ok(())
 }
+
+#[cfg(not(feature = "tee"))]
+fn attach_input_device(
+    vmm: &mut Vmm,
+    event_manager: &mut EventManager,
+    intc: IrqChip,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let input = Arc::new(Mutex::new(devices::virtio::Input::new().unwrap()));
+
+    event_manager
+        .add_subscriber(input.clone())
+        .map_err(RegisterEvent)?;
+
+    let id = String::from(input.lock().unwrap().id());
+
+    input.lock().unwrap().set_intc(intc);
+
+    // The device mutex mustn't be locked here otherwise it will deadlock.
+    attach_mmio_device(
+        vmm,
+        id,
+        MmioTransport::new(vmm.guest_memory().clone(), input),
+    )
+    .map_err(RegisterRngDevice)?;
+
+    Ok(())
+}
+
 #[cfg(feature = "gpu")]
 fn create_display_backend(vm_resources: &VmResources) -> Box<dyn DisplayBackend> {
     match vm_resources.display_backend {
