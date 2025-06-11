@@ -81,6 +81,7 @@ impl VirtioConsoleConfig {
 }
 
 pub struct Console {
+    pub(crate) id: String,
     pub(crate) device_state: DeviceState,
     pub(crate) irq: IRQSignaler,
     pub(crate) control: Arc<ConsoleControl>,
@@ -99,7 +100,7 @@ pub struct Console {
 }
 
 impl Console {
-    pub fn new(ports: Vec<PortDescription>) -> super::Result<Console> {
+    pub fn new(id: String, ports: Vec<PortDescription>) -> super::Result<Console> {
         assert!(!ports.is_empty(), "Expected at least 1 port");
         assert!(
             matches!(ports[0], PortDescription::Console { .. }),
@@ -122,6 +123,7 @@ impl Console {
             .collect();
 
         Ok(Console {
+            id,
             irq: IRQSignaler::new(),
             control: ConsoleControl::new(),
             ports,
@@ -158,7 +160,7 @@ impl Console {
     }
 
     pub(crate) fn process_control_rx(&mut self) -> bool {
-        log::trace!("process_control_rx");
+        log::info!("{}: process_control_rx", self.id);
         let DeviceState::Activated(ref mem) = self.device_state else {
             unreachable!()
         };
@@ -192,7 +194,7 @@ impl Console {
     }
 
     pub(crate) fn process_control_tx(&mut self) -> bool {
-        log::trace!("process_control_tx");
+        log::info!("{}: process_control_tx", self.id);
         let DeviceState::Activated(ref mem) = self.device_state else {
             unreachable!()
         };
@@ -337,6 +339,7 @@ impl VirtioDevice for Console {
     }
 
     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+        info!("{}: read_config", self.id);
         let config_slice = self.config.as_slice();
         let config_len = config_slice.len() as u64;
         if offset >= config_len {
@@ -359,6 +362,7 @@ impl VirtioDevice for Console {
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
+        info!("{}: activate", self.id);
         if self.activate_evt.write(1).is_err() {
             error!("Cannot write to activate_evt");
             return Err(ActivateError::BadActivate);
@@ -377,6 +381,7 @@ impl VirtioDevice for Console {
     }
 
     fn reset(&mut self) -> bool {
+        info!("{}: reset", self.id);
         // Strictly speaking, we should also unsubscribe the queue
         // events, resubscribe the activate eventfd and deactivate
         // the device, but we don't support any scenario in which

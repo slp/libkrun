@@ -15,6 +15,7 @@ gpu = []
 snd = []
 virgl_resource_map2 = []
 nitro = [ "dep:nitro", "dep:nitro-enclaves" ]
+virgl_resource_next = []
 gtk_display = ["gpu"]
 
 [dependencies]

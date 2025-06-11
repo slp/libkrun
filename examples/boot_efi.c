@@ -185,7 +185,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 4, 4096)) {
+    if (err = krun_set_vm_config(ctx_id, 8, 2048)) {
         errno = -err;
         perror(
             "Error configuring the number of vCPUs and/or the amount of RAM");
@@ -193,40 +193,85 @@ int main(int argc, char *const argv[])
     }
 
     if (err = krun_add_disk(ctx_id, "vda",
-                            "/home/slp/aaos-images-arm64/qemu/system.img",
+                            "/home/slp/aaos15-images-arm64/qemu/system.img",
                             false)) {
         errno = -err;
         perror("Error configuring disk image");
         return -1;
     }
 
-    if (err = krun_add_disk(ctx_id, "vdb",
-                            "/home/slp/aaos-images-arm64/qemu/properties.img",
-                            false)) {
+    if (err = krun_add_disk(
+            ctx_id, "vdb",
+            "/home/slp/aaos15-images-arm64/qemu/properties_virgl.img", false)) {
         errno = -err;
         perror("Error configuring disk image");
         return -1;
     }
 
-    uint8_t mac[] = {0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee};
-    if (err = krun_add_net_unixgram(ctx_id, cmdline.passt_socket_path, -1,
-                                    &mac[0], COMPAT_NET_FEATURES,
-                                    NET_FLAG_VFKIT)) {
+    uint8_t mac[] = {0x00, 0x1a, 0x11, 0xe0, 0xcf, 0x00};
+    if (err = krun_add_net_tap(ctx_id, "cvd-mtap-01" & mac[0],
+                               COMPAT_NET_FEATURES, NET_FLAG_VFKIT)) {
         errno = -err;
         perror("Error configuring net mode");
         return -1;
     }
 
-    uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_DRM |
+    uint8_t mac2[] = {0x00, 0x1a, 0x11, 0xe1, 0xcf, 0x00};
+    if (err = krun_add_net_tap(ctx_id, "cvd-etap-01", &mac[0],
+                               COMPAT_NET_FEATURES, NET_FLAG_VFKIT)) {
+        errno = -err;
+        perror("Error configuring net mode");
+        return -1;
+    }
+
+    uint32_t virgl_flags = VIRGLRENDERER_USE_EGL | VIRGLRENDERER_USE_GLES |
+                           VIRGLRENDERER_USE_SURFACELESS |
                            VIRGLRENDERER_THREAD_SYNC |
                            VIRGLRENDERER_USE_ASYNC_FENCE_CB;
+
     if (err = krun_set_gpu_options(ctx_id, virgl_flags)) {
         errno = -err;
         perror("Error configuring gpu");
         return -1;
     }
 
-    int efd = krun_get_shutdown_eventfd(ctx_id);
+    if ((err = krun_set_display_backend_gtk(ctx_id))) {
+        errno = -err;
+        perror("Error enabling gtk display");
+        return -1;
+    }
+
+    if (err = krun_set_display(ctx_id, 0, 1280, 960)) {
+        errno = -err;
+        perror("Error adding a display");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port(
+             ctx_id, 6800,
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_6800"))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port(
+             ctx_id, 9600,
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_9600"))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
+    if ((err = krun_add_vsock_port2(
+             ctx_id, 5555,
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_5555",
+             true))) {
+        errno = -err;
+        perror("Error adding vsock port");
+        return -1;
+    }
+
     if (efd < 0) {
         perror("Can't get shutdown eventfd");
         return -1;

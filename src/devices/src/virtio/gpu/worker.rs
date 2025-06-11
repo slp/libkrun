@@ -132,8 +132,11 @@ impl Worker {
     ) -> VirtioGpuResult {
         virtio_gpu.force_ctx_0();
 
+        debug!("cmd: {:?}", cmd);
+
         match cmd {
             GpuCommand::GetDisplayInfo => virtio_gpu.display_info(),
+            GpuCommand::GetEdid(info) => virtio_gpu.get_edid(info.scanout),
             GpuCommand::ResourceCreate2d(info) => {
                 let resource_id = info.resource_id;
 
