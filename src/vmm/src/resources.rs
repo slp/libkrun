@@ -7,6 +7,7 @@
 use std::fs::File;
 #[cfg(feature = "tee")]
 use std::io::BufReader;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 #[cfg(feature = "tee")]
@@ -110,6 +111,7 @@ pub struct VmResources {
     pub tee_config: TeeConfig,
     /// Flags for the virtio-gpu device.
     pub gpu_virgl_flags: Option<u32>,
+    pub gpu_virgl_server_fd: Option<RawFd>,
     pub gpu_shm_size: Option<usize>,
     #[cfg(feature = "snd")]
     /// Enable the virtio-snd device.
@@ -263,6 +265,10 @@ impl VmResources {
         self.gpu_virgl_flags = Some(virgl_flags);
     }
 
+    pub fn set_gpu_virgl_server_fd(&mut self, fd: RawFd) {
+        self.gpu_virgl_server_fd = Some(fd);
+    }
+
     pub fn set_gpu_shm_size(&mut self, shm_size: usize) {
         self.gpu_shm_size = Some(shm_size);
     }
@@ -340,6 +346,7 @@ mod tests {
             #[cfg(feature = "net")]
             net_builder: Default::default(),
             gpu_virgl_flags: None,
+            gpu_virgl_server_fd: None,
             gpu_shm_size: None,
             #[cfg(feature = "snd")]
             enable_snd: False,

@@ -14,6 +14,8 @@ use std::fs::File;
 use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(feature = "gpu")]
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
@@ -803,6 +805,7 @@ pub fn build_microvm(
             export_table.clone(),
             intc.clone(),
             virgl_flags,
+            vm_resources.gpu_virgl_server_fd,
             #[cfg(target_os = "macos")]
             _sender.clone(),
         )?;
@@ -1869,6 +1872,7 @@ fn attach_gpu_device(
     #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
     intc: IrqChip,
     virgl_flags: u32,
+    virgl_server_fd: Option<RawFd>,
     #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
@@ -1876,6 +1880,7 @@ fn attach_gpu_device(
     let gpu = Arc::new(Mutex::new(
         devices::virtio::Gpu::new(
             virgl_flags,
+            virgl_server_fd,
             #[cfg(target_os = "macos")]
             map_sender,
         )

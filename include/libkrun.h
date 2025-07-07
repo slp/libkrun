@@ -358,6 +358,10 @@ int32_t krun_set_port_map(uint32_t ctx_id, const char *const port_map[]);
  *  "ctx_id"      - the configuration context ID.
  *  "virgl_flags" - flags to pass to virglrenderer.
  *
+ * Notes:
+ * If "virgl_flags" contains the flag "VIRGLRENDERER_RENDER_SERVER", the
+ * render server will be started at the moment this function is called.
+ *
  * Returns:
  *  Zero on success or a negative error number on failure.
  */
@@ -371,6 +375,10 @@ int32_t krun_set_gpu_options(uint32_t ctx_id, uint32_t virgl_flags);
  *  "ctx_id"      - the configuration context ID.
  *  "virgl_flags" - flags to pass to virglrenderer.
  *  "shm_size"    - size of the SHM host window in bytes.
+ *
+ * Notes:
+ * If "virgl_flags" contains the flag "VIRGLRENDERER_RENDER_SERVER", the
+ * render server will be started at the moment this function is called.
  *
  * Returns:
  *  Zero on success or a negative error number on failure.
@@ -659,9 +667,9 @@ int32_t krun_nitro_set_start_flags(uint32_t ctx_id, uint64_t start_flags);
  * Notes:
  *  This function only returns if an error happens before starting the microVM. Otherwise, the
  *  VMM assumes it has full control of the process, and will call to exit() with the workload's exit
- *  code once the microVM shuts down. If an error occurred before running the workload the process 
+ *  code once the microVM shuts down. If an error occurred before running the workload the process
  *  will exit() with an error exit code.
- * 
+ *
  * Error exit codes:
  *  125     - "init" cannot set up the environment inside the microVM.
  *  126     - "init" can find the executable to be run inside the microVM but cannot execute it.

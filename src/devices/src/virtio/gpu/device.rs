@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::os::fd::RawFd;
 use std::result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,7 @@ pub struct Gpu {
     irq_line: Option<u32>,
     pub(crate) sender: Option<Sender<u64>>,
     virgl_flags: u32,
+    virgl_server_fd: Option<RawFd>,
     #[cfg(target_os = "macos")]
     map_sender: Sender<WorkerMessage>,
     export_table: Option<ExportTable>,
@@ -57,6 +59,7 @@ impl Gpu {
     pub(crate) fn with_queues(
         queues: Vec<VirtQueue>,
         virgl_flags: u32,
+        virgl_server_fd: Option<RawFd>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
     ) -> super::Result<Gpu> {
         let mut queue_events = Vec::new();
@@ -84,6 +87,7 @@ impl Gpu {
             irq_line: None,
             sender: None,
             virgl_flags,
+            virgl_server_fd,
             #[cfg(target_os = "macos")]
             map_sender,
             export_table: None,
@@ -92,6 +96,7 @@ impl Gpu {
 
     pub fn new(
         virgl_flags: u32,
+        virgl_server_fd: Option<RawFd>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
     ) -> super::Result<Gpu> {
         let queues: Vec<VirtQueue> = defs::QUEUE_SIZES
@@ -101,6 +106,7 @@ impl Gpu {
         Self::with_queues(
             queues,
             virgl_flags,
+            virgl_server_fd,
             #[cfg(target_os = "macos")]
             map_sender,
         )
@@ -291,6 +297,7 @@ impl VirtioDevice for Gpu {
             self.irq_line,
             shm_region,
             self.virgl_flags,
+            self.virgl_server_fd,
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
             self.export_table.take(),

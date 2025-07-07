@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
 use crossbeam_channel::{unbounded, Sender};
 use libc::c_void;
+use rutabaga_gfx::RutabagaDescriptor;
 #[cfg(target_os = "macos")]
 use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_APPLE;
 #[cfg(all(not(feature = "virgl_resource_map2"), target_os = "linux"))]
@@ -17,8 +19,8 @@ use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD;
 use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_SHM;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, Transfer3D, RUTABAGA_CHANNEL_TYPE_WAYLAND,
-    RUTABAGA_MAP_CACHE_MASK,
+    RutabagaFence, RutabagaFenceHandler, RutabagaFromRawDescriptor, RutabagaIovec, Transfer3D,
+    RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_CACHE_MASK,
 };
 #[cfg(target_os = "linux")]
 use rutabaga_gfx::{
@@ -182,6 +184,7 @@ impl VirtioGpu {
         intc: Option<IrqChip>,
         irq_line: Option<u32>,
         virgl_flags: u32,
+        virgl_server_fd: Option<RawFd>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
         export_table: Option<ExportTable>,
     ) -> Self {
@@ -249,8 +252,10 @@ impl VirtioGpu {
             intc,
             irq_line,
         );
+        let server_fd =
+            virgl_server_fd.map(|fd| unsafe { RutabagaDescriptor::from_raw_descriptor(fd) });
         let rutabaga = builder
-            .build(fence, None)
+            .build(fence, server_fd)
             .expect("Rutabaga initialization failed!");
 
         Self {

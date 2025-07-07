@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{result, thread};
@@ -38,6 +39,7 @@ pub struct Worker {
     irq_line: Option<u32>,
     shm_region: VirtioShmRegion,
     virgl_flags: u32,
+    virgl_server_fd: Option<RawFd>,
     #[cfg(target_os = "macos")]
     map_sender: Sender<WorkerMessage>,
     export_table: Option<ExportTable>,
@@ -55,6 +57,7 @@ impl Worker {
         irq_line: Option<u32>,
         shm_region: VirtioShmRegion,
         virgl_flags: u32,
+        virgl_server_fd: Option<RawFd>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
         export_table: Option<ExportTable>,
     ) -> Self {
@@ -68,6 +71,7 @@ impl Worker {
             irq_line,
             shm_region,
             virgl_flags,
+            virgl_server_fd,
             #[cfg(target_os = "macos")]
             map_sender,
             export_table,
@@ -90,6 +94,7 @@ impl Worker {
             self.intc.clone(),
             self.irq_line,
             self.virgl_flags,
+            self.virgl_server_fd,
             #[cfg(target_os = "macos")]
             self.map_sender.clone(),
             self.export_table.take(),

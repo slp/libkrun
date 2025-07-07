@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{FromRawFd, IntoRawFd, RawFd};
 #[cfg(feature = "nitro")]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -32,6 +32,10 @@ use env_logger::{Env, Target};
 #[cfg(not(feature = "efi"))]
 use libc::size_t;
 use libc::{c_char, c_int};
+use nix::sys::prctl::set_pdeathsig;
+use nix::sys::signal::Signal;
+use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+use nix::unistd::{close, execv, fork, ForkResult};
 use once_cell::sync::Lazy;
 use polly::event_manager::EventManager;
 use utils::eventfd::EventFd;
@@ -154,6 +158,7 @@ struct ContextConfig {
     unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
     shutdown_efd: Option<EventFd>,
     gpu_virgl_flags: Option<u32>,
+    gpu_virgl_server_fd: Option<RawFd>,
     gpu_shm_size: Option<usize>,
     enable_snd: bool,
     console_output: Option<PathBuf>,
@@ -294,6 +299,10 @@ impl ContextConfig {
 
     fn set_gpu_virgl_flags(&mut self, virgl_flags: u32) {
         self.gpu_virgl_flags = Some(virgl_flags);
+    }
+
+    fn set_gpu_virgl_server_fd(&mut self, virgl_server_fd: RawFd) {
+        self.gpu_virgl_server_fd = Some(virgl_server_fd);
     }
 
     fn set_gpu_shm_size(&mut self, shm_size: usize) {
@@ -1091,13 +1100,92 @@ pub unsafe extern "C" fn krun_add_vsock_port2(
     KRUN_SUCCESS
 }
 
+fn start_virgl_render_server() -> Option<RawFd> {
+    let (vmm_fd, server_fd) = match socketpair(
+        AddressFamily::Unix,
+        SockType::SeqPacket,
+        None,
+        SockFlag::empty(),
+    ) {
+        Ok((vmm_fd, server_fd)) => (vmm_fd.into_raw_fd(), server_fd.into_raw_fd()),
+        Err(e) => {
+            error!("Error creating socketpair: {e}");
+            return None;
+        }
+    };
+
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child: _, .. }) => {
+            close(server_fd).unwrap();
+            Some(vmm_fd)
+        }
+        Ok(ForkResult::Child) => {
+            close(vmm_fd).unwrap();
+            let _ = set_pdeathsig(Signal::SIGKILL);
+            let args: [CString; 3] = [
+                CString::new("/usr/libexec/virgl_render_server").unwrap(),
+                CString::new("--socket-fd").unwrap(),
+                CString::new(format!("{}", server_fd.as_raw_fd())).unwrap(),
+            ];
+            match execv(&args[0], &args) {
+                Ok(_) => {
+                    unreachable!("Process image should have been replaced");
+                }
+                Err(e) => {
+                    error!("Couldn't exec virgl render server: {e}");
+                    std::process::exit(0);
+                }
+            }
+        }
+        Err(_) => {
+            error!("Fork failed");
+            None
+        }
+    }
+}
+
+/* Flags for virglrenderer.  Copied from virglrenderer bindings. */
+const VIRGLRENDERER_USE_EGL: u32 = 1 << 0;
+const VIRGLRENDERER_THREAD_SYNC: u32 = 1 << 1;
+const VIRGLRENDERER_USE_GLX: u32 = 1 << 2;
+const VIRGLRENDERER_USE_SURFACELESS: u32 = 1 << 3;
+const VIRGLRENDERER_USE_GLES: u32 = 1 << 4;
+const VIRGLRENDERER_USE_EXTERNAL_BLOB: u32 = 1 << 5;
+const VIRGLRENDERER_VENUS: u32 = 1 << 6;
+const VIRGLRENDERER_NO_VIRGL: u32 = 1 << 7;
+const VIRGLRENDERER_USE_ASYNC_FENCE_CB: u32 = 1 << 8;
+const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
+const VIRGLRENDERER_DRM: u32 = 1 << 10;
+const VIRGLRENDERER_ALL_FLAGS: u32 = VIRGLRENDERER_USE_EGL
+    | VIRGLRENDERER_THREAD_SYNC
+    | VIRGLRENDERER_USE_GLX
+    | VIRGLRENDERER_USE_SURFACELESS
+    | VIRGLRENDERER_USE_GLES
+    | VIRGLRENDERER_USE_EXTERNAL_BLOB
+    | VIRGLRENDERER_VENUS
+    | VIRGLRENDERER_NO_VIRGL
+    | VIRGLRENDERER_USE_ASYNC_FENCE_CB
+    | VIRGLRENDERER_RENDER_SERVER
+    | VIRGLRENDERER_DRM;
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn krun_set_gpu_options(ctx_id: u32, virgl_flags: u32) -> i32 {
+    if (virgl_flags & !VIRGLRENDERER_ALL_FLAGS) != 0 {
+        return -libc::EINVAL;
+    }
+
+    let mut virgl_server_fd: Option<RawFd> = None;
+    if virgl_flags & VIRGLRENDERER_RENDER_SERVER != 0 {
+        virgl_server_fd = start_virgl_render_server();
+    }
+
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_gpu_virgl_flags(virgl_flags);
+            if let Some(virgl_server_fd) = virgl_server_fd {
+                cfg.set_gpu_virgl_server_fd(virgl_server_fd);
+            }
         }
         Entry::Vacant(_) => return -libc::ENOENT,
     }
@@ -1112,11 +1200,23 @@ pub unsafe extern "C" fn krun_set_gpu_options2(
     virgl_flags: u32,
     shm_size: u64,
 ) -> i32 {
+    if (virgl_flags & !VIRGLRENDERER_ALL_FLAGS) != 0 {
+        return -libc::EINVAL;
+    }
+
+    let mut virgl_server_fd: Option<RawFd> = None;
+    if virgl_flags & VIRGLRENDERER_RENDER_SERVER != 0 {
+        virgl_server_fd = start_virgl_render_server();
+    }
+
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_gpu_virgl_flags(virgl_flags);
             cfg.set_gpu_shm_size(shm_size.try_into().unwrap());
+            if let Some(virgl_server_fd) = virgl_server_fd {
+                cfg.set_gpu_virgl_server_fd(virgl_server_fd);
+            }
         }
         Entry::Vacant(_) => return -libc::ENOENT,
     }
@@ -1650,6 +1750,9 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
 
     if let Some(virgl_flags) = ctx_cfg.gpu_virgl_flags {
         ctx_cfg.vmr.set_gpu_virgl_flags(virgl_flags);
+    }
+    if let Some(virgl_server_fd) = ctx_cfg.gpu_virgl_server_fd {
+        ctx_cfg.vmr.set_gpu_virgl_server_fd(virgl_server_fd);
     }
     if let Some(shm_size) = ctx_cfg.gpu_shm_size {
         ctx_cfg.vmr.set_gpu_shm_size(shm_size);
