@@ -286,7 +286,7 @@ impl VirtioGpu {
         let rutabaga_channels_opt = Some(rutabaga_channels);
 
         let builder = RutabagaBuilder::new(
-            rutabaga_gfx::RutabagaComponentType::VirglRenderer,
+            rutabaga_gfx::RutabagaComponentType::Gfxstream,
             virgl_flags,
             0,
         )

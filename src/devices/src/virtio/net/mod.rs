@@ -15,6 +15,7 @@ mod backend;
 pub mod device;
 mod gvproxy;
 mod passt;
+mod tap;
 mod worker;
 
 pub use self::device::Net;

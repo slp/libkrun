@@ -243,6 +243,7 @@ int32_t krun_add_virtiofs2(uint32_t ctx_id,
  *  Zero on success or a negative error number on failure.
  */
 int32_t krun_set_passt_fd(uint32_t ctx_id, int fd);
+int32_t krun_set_passt_fd2(uint32_t ctx_id, int fd);
 
 /**
  * Configures the networking to use gvproxy in vfkit mode.

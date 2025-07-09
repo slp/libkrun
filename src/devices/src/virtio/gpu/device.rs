@@ -247,7 +247,7 @@ impl VirtioDevice for Gpu {
             events_read: 0,
             events_clear: 0,
             num_scanouts: 1,
-            num_capsets: 2,
+            num_capsets: 5,
         };
 
         let config_slice = config.as_slice();

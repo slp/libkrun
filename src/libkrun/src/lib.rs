@@ -8,7 +8,6 @@ use std::env;
 use std::ffi::CStr;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
-#[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
@@ -19,6 +18,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 #[cfg(not(feature = "efi"))]
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::os::fd::IntoRawFd;
+use std::os::unix::net::UnixStream;
 
 use crossbeam_channel::unbounded;
 #[cfg(feature = "gpu")]
@@ -139,6 +140,7 @@ struct ContextConfig {
     args: Option<String>,
     rlimits: Option<String>,
     net_cfg: NetworkConfig,
+    net2_cfg: NetworkConfig,
     mac: Option<[u8; 6]>,
     #[cfg(feature = "blk")]
     block_cfgs: Vec<BlockDeviceConfig>,
@@ -248,6 +250,10 @@ impl ContextConfig {
 
     fn set_net_cfg(&mut self, net_cfg: NetworkConfig) {
         self.net_cfg = net_cfg;
+    }
+
+    fn set_net2_cfg(&mut self, net_cfg: NetworkConfig) {
+        self.net2_cfg = net_cfg;
     }
 
     fn set_net_mac(&mut self, mac: [u8; 6]) {
@@ -639,6 +645,27 @@ pub unsafe extern "C" fn krun_set_passt_fd(ctx_id: u32, fd: c_int) -> i32 {
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_net_cfg(NetworkConfig::VirtioNetPasst(fd));
+        }
+        Entry::Vacant(_) => return -libc::ENOENT,
+    }
+    KRUN_SUCCESS
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[no_mangle]
+pub unsafe extern "C" fn krun_set_passt_fd2(ctx_id: u32, fd: c_int) -> i32 {
+    if fd < 0 {
+        return -libc::EINVAL;
+    }
+
+    if cfg!(not(feature = "net")) {
+        return -libc::ENOTSUP;
+    }
+
+    match CTX_MAP.lock().unwrap().entry(ctx_id) {
+        Entry::Occupied(mut ctx_cfg) => {
+            let cfg = ctx_cfg.get_mut();
+            cfg.set_net2_cfg(NetworkConfig::VirtioNetPasst(fd));
         }
         Entry::Vacant(_) => return -libc::ENOENT,
     }
@@ -1187,10 +1214,25 @@ pub unsafe extern "C" fn krun_set_smbios_oem_strings(
 
 #[cfg(feature = "net")]
 fn create_virtio_net(ctx_cfg: &mut ContextConfig, backend: VirtioNetBackend) {
-    let mac = ctx_cfg.mac.unwrap_or([0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee]);
+    let mac = ctx_cfg.mac.unwrap_or([0x00, 0x1a, 0x11, 0xe0, 0xcf, 0x00]);
 
     let network_interface_config = NetworkInterfaceConfig {
         iface_id: "eth0".to_string(),
+        backend,
+        mac,
+    };
+    ctx_cfg
+        .vmr
+        .add_network_interface(network_interface_config)
+        .expect("Failed to create network interface");
+}
+
+#[cfg(feature = "net")]
+fn create_virtio_net2(ctx_cfg: &mut ContextConfig, backend: VirtioNetBackend) {
+    let mac = ctx_cfg.mac.unwrap_or([0x00, 0x1a, 0x11, 0xe1, 0xcf, 0x00]);
+
+    let network_interface_config = NetworkInterfaceConfig {
+        iface_id: "eth1".to_string(),
         backend,
         mac,
     };
@@ -1504,8 +1546,8 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     }
 
     match ctx_cfg.net_cfg {
-        NetworkConfig::Tsi(tsi_cfg) => {
-            vsock_config.host_port_map = tsi_cfg.port_map;
+        NetworkConfig::Tsi(ref tsi_cfg) => {
+            vsock_config.host_port_map = tsi_cfg.port_map.clone();
             vsock_set = true;
         }
         NetworkConfig::VirtioNetPasst(_fd) => {
@@ -1522,6 +1564,24 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
                 create_virtio_net(&mut ctx_cfg, backend);
             }
         }
+    }
+
+    match ctx_cfg.net2_cfg {
+        NetworkConfig::VirtioNetPasst(_fd) => {
+            #[cfg(feature = "net")]
+            {
+                let backend = VirtioNetBackend::Passt(_fd);
+                create_virtio_net2(&mut ctx_cfg, backend);
+            }
+        }
+        NetworkConfig::VirtioNetGvproxy(ref _path) => {
+            #[cfg(feature = "net")]
+            {
+                let backend = VirtioNetBackend::Gvproxy(_path.clone());
+                create_virtio_net(&mut ctx_cfg, backend);
+            }
+        }
+        _ => panic!("foo"),
     }
 
     if vsock_set {

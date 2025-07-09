@@ -16,7 +16,11 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
 
 #define MAX_ARGS_LEN 4096
 #ifndef MAX_PATH
@@ -171,6 +175,88 @@ void *listen_shutdown_request(void *opaque)
     }
 }
 
+int connect_mtap(int ctx_id)
+{
+    struct ifreq ifr;
+    int fd, err;
+
+    fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0)
+        return fd;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
+     *        IFF_TAP   - TAP device
+     *
+     *        IFF_NO_PI - Do not provide packet information
+     */
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    strncpy(ifr.ifr_name, "cvd-mtap-01", IFNAMSIZ);
+
+    err = ioctl(fd, TUNSETIFF, (void *) &ifr);
+    if (err < 0){
+        perror("Failed to create tap0 device");
+        return -1;
+    }
+
+    int len = 12;
+    err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+    if (err != 0) {
+   	 perror("ioctl(TUNSETVNETHDRSZ)");
+	 return -1;
+    }
+
+    if (err = krun_set_passt_fd(ctx_id, fd)) {
+      errno = -err;
+      perror("Error configuring net mode");
+      return -1;
+    }
+
+    return 0;
+}
+
+int connect_etap(int ctx_id)
+{
+    struct ifreq ifr;
+    int fd, err;
+
+    fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0)
+        return fd;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
+     *        IFF_TAP   - TAP device
+     *
+     *        IFF_NO_PI - Do not provide packet information
+     */
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    strncpy(ifr.ifr_name, "cvd-etap-01", IFNAMSIZ);
+
+    err = ioctl(fd, TUNSETIFF, (void *) &ifr);
+    if (err < 0){
+        perror("Failed to create tap0 device");
+        return -1;
+    }
+
+    int len = 12;
+    err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+    if (err != 0) {
+   	 perror("ioctl(TUNSETVNETHDRSZ)");
+	 return -1;
+    }
+
+    if (err = krun_set_passt_fd2(ctx_id, fd)) {
+      errno = -err;
+      perror("Error configuring net mode");
+      return -1;
+    }
+
+    return 0;
+}
+
 int main(int argc, char *const argv[])
 {
     int ctx_id;
@@ -206,7 +292,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 8, 2048)) {
+    if (err = krun_set_vm_config(ctx_id, 8, 4096)) {
         errno = -err;
         perror(
             "Error configuring the number of vCPUs and/or the amount of RAM");
@@ -214,7 +300,7 @@ int main(int argc, char *const argv[])
     }
 
     if (err = krun_add_disk(ctx_id, "vda",
-                            "/home/slp/aaos-images-arm64/qemu/system.img",
+                            "/home/slp/aaos15-images-arm64/qemu/system.img",
                             false)) {
         errno = -err;
         perror("Error configuring disk image");
@@ -223,7 +309,7 @@ int main(int argc, char *const argv[])
 
     if (err = krun_add_disk(
             ctx_id, "vdb",
-            "/home/slp/aaos-images-arm64/qemu/properties_virgl.img", false)) {
+            "/home/slp/aaos15-images-arm64/qemu/properties.img", false)) {
         errno = -err;
         perror("Error configuring disk image");
         return -1;
@@ -245,7 +331,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (err = krun_set_display(ctx_id, 0, 1920, 1080)) {
+    if (err = krun_set_display(ctx_id, 0, 1280, 960)) {
         errno = -err;
         perror("Error adding a display");
         return -1;
@@ -253,7 +339,7 @@ int main(int argc, char *const argv[])
 
     if ((err = krun_add_vsock_port(
              ctx_id, 6800,
-             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_6800"))) {
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_6800"))) {
         errno = -err;
         perror("Error adding vsock port");
         return -1;
@@ -261,7 +347,7 @@ int main(int argc, char *const argv[])
 
     if ((err = krun_add_vsock_port(
              ctx_id, 9600,
-             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_9600"))) {
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_9600"))) {
         errno = -err;
         perror("Error adding vsock port");
         return -1;
@@ -269,14 +355,14 @@ int main(int argc, char *const argv[])
 
     if ((err = krun_add_vsock_port2(
              ctx_id, 5555,
-             "/home/slp/aaos-images-arm64/qemu/vhost-user-vsock.uds_5555",
+             "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_5555",
              true))) {
         errno = -err;
         perror("Error adding vsock port");
         return -1;
     }
 
-#if 1
+#if 0
     int passt_fd = connect_to_passt(cmdline.passt_socket_path);
 
     if (passt_fd < 0) {
@@ -289,6 +375,9 @@ int main(int argc, char *const argv[])
       return -1;
     }
 #endif
+
+    connect_mtap(ctx_id);
+    connect_etap(ctx_id);
 
     int efd = krun_get_shutdown_eventfd(ctx_id);
     if (efd < 0) {
