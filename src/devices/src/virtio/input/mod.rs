@@ -1,12 +1,13 @@
 mod device;
 mod event_handler;
+mod worker;
 
 pub use self::defs::uapi::VIRTIO_ID_INPUT as TYPE_INPUT;
 pub use self::device::Input;
 
 mod defs {
     pub const INPUT_DEV_ID: &str = "virtio_input";
-    pub const NUM_QUEUES: usize = 1;
+    pub const NUM_QUEUES: usize = 2;
     pub const QUEUE_SIZES: &[u16] = &[256; NUM_QUEUES];
 
     pub mod uapi {

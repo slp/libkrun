@@ -3,16 +3,21 @@ use std::os::fd::AsRawFd;
 use std::result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use evdev::Device;
+use libc::EFD_NONBLOCK;
 use nix::ioctl_read_buf;
 use utils::eventfd::EventFd;
+use virtio_bindings::virtio_blk::virtio_blk_outhdr;
+use virtio_bindings::virtio_input;
 use vm_memory::{ByteValued, Bytes, GuestMemoryMmap};
 
 use super::super::{
     ActivateError, ActivateResult, DeviceState, Queue as VirtQueue, VirtioDevice,
     VIRTIO_MMIO_INT_VRING,
 };
+use super::worker::InputWorker;
 use super::{defs, defs::uapi, InputError, Result};
 use crate::legacy::IrqChip;
 use crate::Error as DeviceError;
@@ -30,9 +35,20 @@ ioctl_read_buf!(eviocgbit_absolute, b'E', 0x23, u8);
 ioctl_read_buf!(eviocgbit_misc, b'E', 0x24, u8);
 ioctl_read_buf!(eviocgbit_switch, b'E', 0x25, u8);
 
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+struct virtio_input_absinfo {
+    min: u32,
+    max: u32,
+    fuzz: u32,
+    flat: u32,
+    res: u32,
+}
+
 const VIRTIO_INPUT_CFG_ID_NAME: u8 = 0x01;
 const VIRTIO_INPUT_CFG_ID_DEVIDS: u8 = 0x03;
 const VIRTIO_INPUT_CFG_EV_BITS: u8 = 0x11;
+const VIRTIO_INPUT_CFG_ABS_INFO: u8 = 0x12;
 const VIRTIO_INPUT_CFG_SIZE: usize = 128;
 
 const EV_SYN: u8 = 0x00;
@@ -70,15 +86,6 @@ impl Default for InputConfig {
     }
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct InputEvent {
-    ev_type: u16,
-    code: u16,
-    value: u32,
-}
-unsafe impl ByteValued for InputEvent {}
-
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(C, packed)]
 pub struct VirtioInput {}
@@ -94,14 +101,16 @@ pub struct Input {
     pub(crate) device_state: DeviceState,
     select: u8,
     subsel: u8,
-    ev_dev: Device,
-    ev_list: VecDeque<InputEvent>,
     intc: Option<IrqChip>,
     irq_line: Option<u32>,
+    pub(crate) ev_dev: Device,
+    worker_thread: Option<JoinHandle<()>>,
+    worker_stopfd: EventFd,
 }
 
 impl Input {
     pub(crate) fn with_queues(queues: Vec<VirtQueue>) -> super::Result<Input> {
+        debug!("input: with_queues");
         let mut queue_events = Vec::new();
         for _ in 0..queues.len() {
             queue_events
@@ -121,10 +130,12 @@ impl Input {
             device_state: DeviceState::Inactive,
             select: 0,
             subsel: 0,
-            ev_dev: Device::open("/dev/input/event3").unwrap(),
-            ev_list: VecDeque::new(),
             intc: None,
             irq_line: None,
+            ev_dev: Device::open("/dev/input/event3").unwrap(),
+            worker_thread: None,
+            worker_stopfd: EventFd::new(utils::eventfd::EFD_NONBLOCK)
+                .map_err(InputError::EventFd)?,
         })
     }
 
@@ -144,92 +155,6 @@ impl Input {
         self.intc = Some(intc);
     }
 
-    pub fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
-        debug!("input: raising IRQ");
-        self.interrupt_status
-            .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-        if let Some(intc) = &self.intc {
-            intc.lock()
-                .unwrap()
-                .set_irq(self.irq_line, Some(&self.interrupt_evt))?;
-        }
-        Ok(())
-    }
-
-    fn process_event(&mut self) -> bool {
-        let mem = match self.device_state {
-            DeviceState::Activated(ref mem) => mem,
-            // This should never happen, it's been already validated in the event handler.
-            DeviceState::Inactive => unreachable!(),
-        };
-
-        let last_sync_index = self
-            .ev_list
-            .iter()
-            .rposition(|event| event.ev_type == EV_SYN as u16 && event.code == SYN_REPORT as u16)
-            .unwrap_or(0);
-
-        if last_sync_index == 0 {
-            log::warn!("No available events on the list!");
-            return true;
-        }
-
-        let mut have_used = false;
-        let mut index = 0;
-
-        while index <= last_sync_index {
-            let event = self.ev_list.get(index).unwrap();
-            index += 1;
-
-            if let Some(head) = self.queues[REQ_INDEX].pop(mem) {
-                let index = head.index;
-                let mut written = 0;
-                for desc in head.into_iter() {
-                    if let Err(e) = mem.write_obj(*event, desc.addr) {
-                        error!("Failed to write slice: {:?}", e);
-                        self.queues[REQ_INDEX].go_to_previous_position();
-                        break;
-                    }
-                    written += desc.len;
-                }
-
-                have_used = true;
-                if let Err(e) = self.queues[REQ_INDEX].add_used(mem, index, written) {
-                    error!("failed to add used elements to the queue: {:?}", e);
-                }
-            } else {
-                // Now cannot get available descriptor, which means the host cannot process
-                // event data in time and overrun happens in the backend. In this case,
-                // we simply drop the incomping input event and notify guest for handling
-                // events. At the end, it returns Ok(false) so can avoid exiting the thread loop.
-                self.ev_list.clear();
-
-                return true;
-            }
-        }
-
-        // Sent the events [0..last_sync_index] to vring and remove them from the list.
-        // The range end parameter is an exclusive value, so use 'last_sync_index + 1'.
-        self.ev_list.drain(0..last_sync_index + 1);
-        have_used
-    }
-
-    pub fn process_req(&mut self) -> bool {
-        debug!("input: process_req()");
-        let events = self.ev_dev.fetch_events().unwrap();
-
-        for event in events {
-            let ev_raw_data = InputEvent {
-                ev_type: event.event_type().0,
-                code: event.code(),
-                value: event.value() as u32,
-            };
-            self.ev_list.push_back(ev_raw_data);
-        }
-
-        self.process_event()
-    }
-
     pub fn read_event_config(&self) -> Result<InputConfig> {
         let mut cfg: [u8; VIRTIO_INPUT_CFG_SIZE] = [0; VIRTIO_INPUT_CFG_SIZE];
 
@@ -244,7 +169,6 @@ impl Input {
                     return Err(InputError::HandleEventUnknownEvent);
                 }
             };
-
         // SAFETY: Safe as the file is a valid event device, the kernel will only
         // update the correct amount of memory in func.
         if unsafe { func(self.ev_dev.as_raw_fd(), &mut cfg) }.is_err() {
@@ -265,6 +189,40 @@ impl Input {
             reserved: [0; 5],
             val: cfg,
         })
+    }
+
+    pub fn read_abs_config(&self) -> Result<InputConfig> {
+        for (code, info) in self.ev_dev.get_absinfo().unwrap().into_iter() {
+            if code.0 == self.subsel as u16 {
+                info!("absinfo found");
+                let vinfo = virtio_input_absinfo {
+                    min: info.minimum() as u32,
+                    max: info.maximum() as u32,
+                    fuzz: info.fuzz() as u32,
+                    flat: info.flat() as u32,
+                    res: info.resolution() as u32,
+                };
+
+                let mut val: [u8; VIRTIO_INPUT_CFG_SIZE] = [0; VIRTIO_INPUT_CFG_SIZE];
+
+                val[..std::mem::size_of::<virtio_input_absinfo>()].copy_from_slice(unsafe {
+                    std::slice::from_raw_parts(
+                        &vinfo as *const _ as *const u8,
+                        std::mem::size_of::<virtio_input_absinfo>(),
+                    )
+                });
+
+                return Ok(InputConfig {
+                    select: self.select,
+                    subsel: self.subsel,
+                    size: std::mem::size_of::<virtio_input_absinfo>() as u8,
+                    reserved: [0; 5],
+                    val,
+                });
+            }
+        }
+
+        Err(InputError::HandleEventUnknownEvent)
     }
 
     pub fn read_name_config(&self) -> Result<InputConfig> {
@@ -367,7 +325,11 @@ impl VirtioDevice for Input {
             VIRTIO_INPUT_CFG_ID_NAME => self.read_name_config(),
             VIRTIO_INPUT_CFG_ID_DEVIDS => self.read_id_config(),
             VIRTIO_INPUT_CFG_EV_BITS => self.read_event_config(),
-            _ => unreachable!("invalid input config request"),
+            VIRTIO_INPUT_CFG_ABS_INFO => self.read_abs_config(),
+            _ => {
+                error!("invalid input config request: {}", self.select);
+                return;
+            }
         };
 
         let val = match cfg {
@@ -387,9 +349,13 @@ impl VirtioDevice for Input {
         data.copy_from_slice(&result);
     }
 
-    fn write_config(&mut self, _offset: u64, data: &[u8]) {
-        self.select = data[0];
-        self.subsel = data[1];
+    fn write_config(&mut self, offset: u64, data: &[u8]) {
+        debug!("input: write_config: offset={offset}");
+        if offset == 0 {
+            self.select = data[0];
+        } else {
+            self.subsel = data[0];
+        }
     }
 
     fn activate(&mut self, mem: GuestMemoryMmap) -> ActivateResult {
@@ -406,6 +372,17 @@ impl VirtioDevice for Input {
             error!("Cannot write to activate_evt",);
             return Err(ActivateError::BadActivate);
         }
+
+        let worker = InputWorker::new(
+            self.queues[0].clone(),
+            self.interrupt_status.clone(),
+            self.interrupt_evt.try_clone().unwrap(),
+            self.intc.clone(),
+            self.irq_line,
+            mem.clone(),
+            self.worker_stopfd.try_clone().unwrap(),
+        );
+        self.worker_thread = Some(worker.run());
 
         self.device_state = DeviceState::Activated(mem);
 

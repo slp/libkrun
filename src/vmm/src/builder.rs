@@ -1811,7 +1811,7 @@ fn attach_android_devices(
     {
         let file = File::options()
             .append(true)
-            .open("/home/slp/aaos-images-arm64/qemu/kernel-log-pipe")
+            .open("/home/slp/aaos15-images-arm64/qemu/kernel-log-pipe")
             .unwrap();
 
         let ports = vec![PortDescription::Console {
@@ -1843,7 +1843,7 @@ fn attach_android_devices(
     {
         let file = File::options()
             .append(true)
-            .open("/home/slp/aaos-images-arm64/qemu/hvc1")
+            .open("/home/slp/aaos15-images-arm64/qemu/hvc1")
             .unwrap();
 
         let ports = vec![PortDescription::Console {
@@ -1873,10 +1873,10 @@ fn attach_android_devices(
     }
 
     {
-        let file_in = File::open("/home/slp/aaos-images-arm64/qemu/logcat-pipe").unwrap();
+        let file_in = File::open("/home/slp/aaos15-images-arm64/qemu/logcat-pipe").unwrap();
         let file_out = File::options()
             .append(true)
-            .open("/home/slp/aaos-images-arm64/qemu/logcat-pipe")
+            .open("/home/slp/aaos15-images-arm64/qemu/logcat-pipe")
             .unwrap();
 
         let ports = vec![PortDescription::Console {
@@ -1906,9 +1906,9 @@ fn attach_android_devices(
     }
 
     let pipes = vec![
-        "/home/slp/aaos-images-arm64/qemu/keymaster_fifo_vm",
-        "/home/slp/aaos-images-arm64/qemu/gatekeeper_fifo_vm",
-        "/home/slp/aaos-images-arm64/qemu/bt_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/keymaster_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/gatekeeper_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/bt_fifo_vm",
     ];
 
     for pipe in pipes {
@@ -1946,6 +1946,100 @@ fn attach_android_devices(
         hvc_num += 1;
     }
 
+    for i in 1..5 {
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_null().unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+
+    let pipes = vec![
+        "/home/slp/aaos15-images-arm64/qemu/oemlock_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/keymint_fifo_vm",
+    ];
+
+    for pipe in pipes {
+        println!("adding pipe {}", pipe);
+
+        let file_in = File::open(format!("{pipe}.in")).unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open(format!("{pipe}.out"))
+            .unwrap();
+
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+    /*
+    for i in 1..5 {
+        let ports = vec![PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_null().unwrap()),
+        }];
+
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc{hvc_num}"), ports).unwrap(),
+        ));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc{hvc_num}"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
+
+        hvc_num += 1;
+    }
+    */
     Ok(())
 }
 
