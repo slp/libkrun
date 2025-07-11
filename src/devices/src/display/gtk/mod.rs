@@ -71,7 +71,7 @@ impl DisplayBackend for DisplayBackendGtk {
         height: u32,
         format: GpuResourceFormat,
     ) -> Result<(), DisplayBackendError> {
-        println!("configure_scanout");
+        error!("configure_scanout");
         check_scanout_id(self, scanout_id)?;
         let Ok(width) = width.try_into() else {
             warn!("Display width out of range");

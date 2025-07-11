@@ -102,11 +102,13 @@ impl Worker {
 
         loop {
             let _ = self.receiver.recv().unwrap();
+            error!("received event");
             if self.process_queue(&mut virtio_gpu, 0) {
                 if let Err(e) = self.signal_used_queue() {
                     error!("Error signaling queue: {e:?}");
                 }
             }
+            error!("processed event");
         }
     }
 

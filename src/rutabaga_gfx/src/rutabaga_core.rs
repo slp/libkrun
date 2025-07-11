@@ -911,11 +911,13 @@ impl Rutabaga {
 
     /// Exports a blob resource.  See virtio-gpu spec for blob flag use flags.
     pub fn export_blob(&mut self, resource_id: u32) -> RutabagaResult<RutabagaHandle> {
+        log::error!("rutabaga export_blob");
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(RutabagaError::InvalidResourceId)?;
 
+        log::error!("rutabaga export_blob get_mut");
         // We can inspect blob flags only once guest minigbm is fully transitioned to blob.
         let share_mask = RUTABAGA_BLOB_FLAG_USE_SHAREABLE | RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE;
         let shareable = (resource.blob_flags & share_mask != 0) || !resource.blob;
@@ -924,17 +926,22 @@ impl Rutabaga {
 
         match (opt, shareable) {
             (Some(handle), true) => {
+                log::error!("rutabaga export_blob shareable");
                 let clone = handle.try_clone()?;
                 resource.handle = Some(handle);
                 Ok(clone)
             }
             (Some(handle), false) => {
+                log::error!("rutabaga export_blob false");
                 // Exactly one strong reference in this case.
                 let hnd =
                     Arc::try_unwrap(handle).map_err(|_| RutabagaError::InvalidRutabagaHandle)?;
                 Ok(hnd)
             }
-            _ => Err(RutabagaError::InvalidRutabagaHandle),
+            _ => {
+                log::error!("rutabaga export_blob invalid");
+                Err(RutabagaError::InvalidRutabagaHandle)
+            }
         }
     }
 

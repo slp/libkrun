@@ -371,14 +371,18 @@ impl Gfxstream {
     }
 
     fn export_blob(&self, resource_id: u32) -> RutabagaResult<Arc<RutabagaHandle>> {
+        log::error!("gfxstream export_blob");
         let mut stream_handle: stream_renderer_handle = Default::default();
         let ret = unsafe { stream_renderer_export_blob(resource_id, &mut stream_handle) };
         ret_to_res(ret)?;
 
+        log::error!("gfxstream export_blob 2");
         // Safe because the handle was just returned by a successful gfxstream call so it must be
         // valid and owned by us.
         let raw_descriptor = stream_handle.os_handle as RawDescriptor;
         let handle = unsafe { SafeDescriptor::from_raw_descriptor(raw_descriptor) };
+
+        log::error!("gfxstream export_blob Handle");
 
         Ok(Arc::new(RutabagaHandle {
             os_handle: handle,

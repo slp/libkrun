@@ -94,7 +94,7 @@ use vm_memory::GuestRegionMmap;
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 #[cfg(feature = "efi")]
-static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/u-boot.bin");
+static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/KRUN_EFI.silent.fd");
 
 /// Errors associated with starting the instance.
 #[derive(Debug)]
@@ -810,18 +810,16 @@ pub fn build_microvm(
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
-    #[cfg(not(feature = "tee"))]
-    attach_input_device(&mut vmm, event_manager, intc.clone())?;
+    //#[cfg(not(feature = "tee"))]
+    //attach_input_device(&mut vmm, event_manager, intc.clone())?;
 
-    /*
     attach_console_devices(
         &mut vmm,
         event_manager,
         intc.clone(),
         vm_resources.console_output.clone(),
     )?;
-    */
-    attach_android_devices(&mut vmm, event_manager, intc.clone())?;
+    //attach_android_devices(&mut vmm, event_manager, intc.clone())?;
 
     #[cfg(not(any(feature = "tee", feature = "nitro")))]
     let export_table: Option<ExportTable> = if cfg!(feature = "gpu") {

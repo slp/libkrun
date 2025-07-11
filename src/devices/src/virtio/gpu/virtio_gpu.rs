@@ -287,9 +287,11 @@ impl VirtioGpu {
 
         let builder = RutabagaBuilder::new(
             rutabaga_gfx::RutabagaComponentType::Gfxstream,
+            //rutabaga_gfx::RutabagaComponentType::VirglRenderer,
             virgl_flags,
             0,
         )
+        .set_use_external_blob(true)
         .set_rutabaga_channels(rutabaga_channels_opt);
         let builder = if let Some(export_table) = export_table {
             builder.set_export_table(export_table)
@@ -786,14 +788,18 @@ impl VirtioGpu {
         shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
+        error!("resource_map_blob");
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        error!("resource_map_blob map_info");
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
 
+        error!("resource_map_blob export_blob");
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            error!("resource_map_blob export_blob SUCCESS");
             if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
                 let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
                     RUTABAGA_MAP_ACCESS_READ => libc::PROT_READ,
@@ -843,11 +849,13 @@ impl VirtioGpu {
         shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
+        error!("resource_map_blob");
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        error!("resource_map_blob map_info");
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
 
         let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
@@ -864,6 +872,7 @@ impl VirtioGpu {
         let addr = shm_region.host_addr + offset;
 
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            error!("resource_map_blob SUCCESS");
             if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_SHM {
                 let ret = unsafe {
                     libc::mmap(
@@ -903,15 +912,20 @@ impl VirtioGpu {
         shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
+        error!("resource_map_blob");
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        error!("resource_map_blob map_info");
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+        error!("resource_map_blob map_ptr");
         let map_ptr = self.rutabaga.map_ptr(resource_id).map_err(|_| ErrUnspec)?;
 
+        error!("resource_map_blob export_blob");
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            error!("resource_map_blob export_blob SUCCESS");
             if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_APPLE {
                 if offset + resource.size > shm_region.size as u64 {
                     error!("mapping DOES NOT FIT");
