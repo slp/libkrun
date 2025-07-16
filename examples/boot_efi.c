@@ -185,7 +185,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 8, 2048)) {
+    if (err = krun_set_vm_config(ctx_id, 8, 4096)) {
         errno = -err;
         perror(
             "Error configuring the number of vCPUs and/or the amount of RAM");
@@ -209,16 +209,16 @@ int main(int argc, char *const argv[])
     }
 
     uint8_t mac[] = {0x00, 0x1a, 0x11, 0xe0, 0xcf, 0x00};
-    if (err = krun_add_net_tap(ctx_id, "cvd-mtap-01" & mac[0],
-                               COMPAT_NET_FEATURES, NET_FLAG_VFKIT)) {
+    if (err = krun_add_net_tap(ctx_id, "cvd-mtap-01", &mac[0],
+                               COMPAT_NET_FEATURES, 0)) {
         errno = -err;
         perror("Error configuring net mode");
         return -1;
     }
 
     uint8_t mac2[] = {0x00, 0x1a, 0x11, 0xe1, 0xcf, 0x00};
-    if (err = krun_add_net_tap(ctx_id, "cvd-etap-01", &mac[0],
-                               COMPAT_NET_FEATURES, NET_FLAG_VFKIT)) {
+    if (err = krun_add_net_tap(ctx_id, "cvd-etap-01", &mac2[0],
+                               COMPAT_NET_FEATURES, 0)) {
         errno = -err;
         perror("Error configuring net mode");
         return -1;
@@ -263,6 +263,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
+    unlink("/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_5555");
     if ((err = krun_add_vsock_port2(
              ctx_id, 5555,
              "/home/slp/aaos15-images-arm64/qemu/vhost-user-vsock.uds_5555",
@@ -272,6 +273,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
+    int efd = krun_get_shutdown_eventfd(ctx_id);
     if (efd < 0) {
         perror("Can't get shutdown eventfd");
         return -1;

@@ -506,7 +506,9 @@ impl RutabagaComponent for Gfxstream {
         resource: &mut RutabagaResource,
         transfer: Transfer3D,
     ) -> RutabagaResult<()> {
+        log::error!("transfer_write: entry");
         if transfer.is_empty() {
+            log::error!("transfer is EMPTY");
             return Ok(());
         }
 
@@ -543,7 +545,9 @@ impl RutabagaComponent for Gfxstream {
         transfer: Transfer3D,
         buf: Option<IoSliceMut>,
     ) -> RutabagaResult<()> {
+        log::error!("transfer_read");
         if transfer.is_empty() {
+            log::error!("transfer_read is EMPTY");
             return Ok(());
         }
 

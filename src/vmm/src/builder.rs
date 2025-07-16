@@ -2012,7 +2012,7 @@ fn attach_android_devices(
 
         hvc_num += 1;
     }
-    /*
+
     for i in 1..5 {
         let ports = vec![PortDescription::Console {
             input: Some(port_io::input_empty().unwrap()),
@@ -2039,7 +2039,7 @@ fn attach_android_devices(
 
         hvc_num += 1;
     }
-    */
+
     Ok(())
 }
 

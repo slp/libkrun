@@ -29,7 +29,7 @@ use rutabaga_gfx::{
 use utils::eventfd::EventFd;
 #[cfg(target_os = "macos")]
 use utils::worker_message::WorkerMessage;
-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
@@ -290,6 +290,14 @@ impl VirtioGpu {
             virgl_flags,
             0,
         )
+        .set_display_width(1280)
+        .set_display_height(960)
+        .set_use_egl(true)
+        .set_use_vulkan(true)
+        .set_use_gles(true)
+        .set_use_glx(false)
+        .set_use_surfaceless(true)
+        .set_use_external_blob(true)
         .set_rutabaga_channels(rutabaga_channels_opt);
         let builder = if let Some(export_table) = export_table {
             builder.set_export_table(export_table)
@@ -604,12 +612,19 @@ impl VirtioGpu {
     /// Can also be used to invalidate caches.
     pub fn transfer_read(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _transfer: Transfer3D,
-        _buf: Option<VolatileSlice>,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
     ) -> VirtioGpuResult {
-        //panic!("virtio_gpu: transfer_read unimplemented");
+        let buf = buf.map(|vs| {
+            IoSliceMut::new(
+                // SAFETY: trivially safe
+                unsafe { std::slice::from_raw_parts_mut(vs.as_ptr(), vs.len()) },
+            )
+        });
+        self.rutabaga
+            .transfer_read(ctx_id, resource_id, transfer, buf)?;
         Ok(OkNoData)
     }
 
@@ -758,6 +773,15 @@ impl VirtioGpu {
                 Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
         }
 
+        error!("resource_create_blob: processing vecs");
+        for vec in vecs {
+            error!(
+                "resource_create_blob: addr={:x} size={}",
+                vec.0.raw_value(),
+                vec.1
+            );
+        }
+
         self.rutabaga.resource_create_blob(
             ctx_id,
             resource_id,
@@ -786,14 +810,21 @@ impl VirtioGpu {
         shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
+        error!("resource_map_blob");
+
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        error!("resource_map_blob: map_info");
+
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
 
+        error!("resource_map_blob: export_blob");
+
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            error!("resource_map_blob: export_blob OK");
             if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
                 let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
                     RUTABAGA_MAP_ACCESS_READ => libc::PROT_READ,
@@ -806,10 +837,11 @@ impl VirtioGpu {
                     error!("mapping DOES NOT FIT");
                 }
                 let addr = shm_region.host_addr + offset;
-                debug!(
+                error!(
                     "mapping: host_addr={:x}, addr={:x}, size={}",
                     shm_region.host_addr, addr, resource.size
                 );
+                error!("mapping: export.os_handle={}", export.os_handle.as_raw_fd());
                 let ret = unsafe {
                     libc::mmap(
                         addr as *mut libc::c_void,
@@ -821,12 +853,32 @@ impl VirtioGpu {
                     )
                 };
                 if ret == libc::MAP_FAILED {
+                    error!("resource_map_blob: MAP_FAILED retrying");
+                    let ret = unsafe {
+                        libc::mmap(
+                            addr as *mut libc::c_void,
+                            resource.size as usize,
+                            libc::PROT_WRITE | libc::PROT_READ,
+                            libc::MAP_SHARED | libc::MAP_FIXED,
+                            export.os_handle.as_raw_fd(),
+                            0 as libc::off_t,
+                        )
+                    };
+                    if ret == libc::MAP_FAILED {
+                        error!("resource_map_blob: RETRY failed");
+                    } else {
+                        error!("resource_map_blob: RETRY success");
+                    }
                     return Err(ErrUnspec);
+                } else {
+                    error!("resource_map_blob: SUCCESS");
                 }
             } else {
+                error!("resource_map_blob: export_blob OK, unknown handle");
                 return Err(ErrUnspec);
             }
         } else {
+            error!("resource_map_blob: export_blob ERROR");
             return Err(ErrUnspec);
         }
 
@@ -843,11 +895,13 @@ impl VirtioGpu {
         shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
+        error!("resource_map_blob");
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        error!("resource_map_blob map_info");
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
 
         let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
@@ -863,8 +917,11 @@ impl VirtioGpu {
         }
         let addr = shm_region.host_addr + offset;
 
+        error!("resource_map_blob: export");
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            error!("resource_map_blob: export SUCCESS");
             if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_SHM {
+                error!("resource_map_blob: export SHM");
                 let ret = unsafe {
                     libc::mmap(
                         addr as *mut libc::c_void,
@@ -880,6 +937,7 @@ impl VirtioGpu {
                     return Err(ErrUnspec);
                 }
             } else {
+                error!("resource_map_blob: export NOT SHM");
                 self.rutabaga.resource_map(
                     resource_id,
                     addr,
@@ -888,6 +946,8 @@ impl VirtioGpu {
                     libc::MAP_SHARED | libc::MAP_FIXED,
                 )?;
             }
+        } else {
+            error!("resource_map_blob: export FAILED");
         }
 
         resource.shmem_offset = Some(offset);
