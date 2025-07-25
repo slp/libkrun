@@ -54,9 +54,9 @@ pub enum Error {
 const EBDA_START: u64 = 0x9fc00;
 pub const RESET_VECTOR: u64 = 0xfff0;
 pub const RESET_VECTOR_SEV_AP: u64 = 0xfff3;
-pub const BIOS_START: u64 = 0xffff_0000;
-pub const BIOS_SIZE: usize = 65536;
-const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
+pub const BIOS_SIZE: usize = 4096 * 256;
+pub const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
+pub const BIOS_START: u64 = FIRST_ADDR_PAST_32BITS - BIOS_SIZE as u64;
 const MEM_32BIT_GAP_SIZE: u64 = 768 << 20;
 /// The start of the memory area reserved for MMIO devices.
 pub const MMIO_MEM_START: u64 = FIRST_ADDR_PAST_32BITS - MEM_32BIT_GAP_SIZE;
@@ -95,11 +95,12 @@ pub fn arch_memory_regions(
                     vec![
                         (GuestAddress(0), kernel_load_addr as usize),
                         (GuestAddress(kernel_load_addr + kernel_size as u64), size),
+                        (GuestAddress(BIOS_START), BIOS_SIZE),
                     ],
                 )
             } else {
                 let ram_last_addr = size as u64;
-                (ram_last_addr, shm_start_addr, vec![(GuestAddress(0), size)])
+                (ram_last_addr, shm_start_addr, vec![(GuestAddress(0), size), (GuestAddress(BIOS_START), BIOS_SIZE)])
             }
         }
 
@@ -127,6 +128,7 @@ pub fn arch_memory_regions(
                     shm_start_addr,
                     vec![
                         (GuestAddress(0), MMIO_MEM_START as usize),
+                        (GuestAddress(BIOS_START), BIOS_SIZE),
                         (GuestAddress(FIRST_ADDR_PAST_32BITS), remaining),
                     ],
                 )

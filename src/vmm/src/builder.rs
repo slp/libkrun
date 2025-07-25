@@ -82,7 +82,7 @@ use nix::unistd::isatty;
 use polly::event_manager::{Error as EventManagerError, EventManager};
 use utils::eventfd::EventFd;
 use utils::worker_message::WorkerMessage;
-#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
+#[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
 use vm_memory::mmap::MmapRegion;
 #[cfg(not(any(feature = "tee", feature = "nitro")))]
 use vm_memory::Address;
@@ -94,7 +94,7 @@ use vm_memory::GuestRegionMmap;
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 #[cfg(feature = "efi")]
-static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/u-boot.bin");
+static EDK2_BINARY: &[u8] = include_bytes!("../../../edk2/u-boot.rom");
 
 /// Errors associated with starting the instance.
 #[derive(Debug)]
@@ -689,6 +689,7 @@ pub fn build_microvm(
             Some(intc.clone()),
         )?;
 
+        println!("entryaddr: {:?}", payload_config.entry_addr);
         vcpus = create_vcpus_x86_64(
             &vm,
             &vcpu_config,
@@ -810,8 +811,8 @@ pub fn build_microvm(
     attach_balloon_device(&mut vmm, event_manager, intc.clone())?;
     #[cfg(not(feature = "tee"))]
     attach_rng_device(&mut vmm, event_manager, intc.clone())?;
-    #[cfg(not(feature = "tee"))]
-    attach_input_device(&mut vmm, event_manager, intc.clone())?;
+    //#[cfg(not(feature = "tee"))]
+    //attach_input_device(&mut vmm, event_manager, intc.clone())?;
 
     /*
     attach_console_devices(
@@ -1207,8 +1208,8 @@ fn load_payload(
         }
         #[cfg(feature = "efi")]
         Payload::Efi => {
-            guest_mem.write(EDK2_BINARY, GuestAddress(0u64)).unwrap();
-            Ok((guest_mem, GuestAddress(0), None, None))
+            guest_mem.write(EDK2_BINARY, GuestAddress(arch::x86_64::FIRST_ADDR_PAST_32BITS - EDK2_BINARY.len() as u64)).unwrap();
+            Ok((guest_mem, GuestAddress(arch::RESET_VECTOR), None, None))
         }
         #[cfg(not(feature = "efi"))]
         Payload::Efi => {
@@ -1260,7 +1261,7 @@ fn create_guest_memory(
         }
         #[cfg(test)]
         Payload::Empty => arch::arch_memory_regions(mem_size, None, 0, 0),
-        Payload::Efi => unreachable!(),
+        Payload::Efi => arch::arch_memory_regions(mem_size, None, 0, 0),
     };
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     let (arch_mem_info, mut arch_mem_regions) = match payload {

@@ -97,6 +97,7 @@ pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64, id: u8) -> Result<()> {
 pub fn setup_sregs(mem: &GuestMemoryMmap, vcpu: &VcpuFd, id: u8) -> Result<()> {
     let mut sregs: kvm_sregs = vcpu.get_sregs().map_err(Error::GetStatusRegisters)?;
 
+    /*
     if cfg!(not(feature = "tee")) {
         configure_segments_and_sregs(mem, &mut sregs)?;
         setup_page_tables(mem, &mut sregs)?; // TODO(dgreid) - Can this be done once per system instead
@@ -104,6 +105,7 @@ pub fn setup_sregs(mem: &GuestMemoryMmap, vcpu: &VcpuFd, id: u8) -> Result<()> {
         //sregs.cs.selector = 0x9100;
         //sregs.cs.base = 0x91000;
     }
+    */
 
     vcpu.set_sregs(&sregs).map_err(Error::SetStatusRegisters)
 }

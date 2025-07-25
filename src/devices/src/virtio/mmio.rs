@@ -186,6 +186,7 @@ impl MmioTransport {
             }
             _ if status == 0 => {
                 if self.locked_device().is_activated() && !self.locked_device().reset() {
+                    error!("device failed after reset");
                     self.device_status |= FAILED;
                 }
 

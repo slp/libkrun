@@ -136,6 +136,8 @@ impl MMIODeviceManager {
 
         mmio_device.locked_device().set_irq_line(self.irq);
 
+        println!("MMIO: addr={:x} irq={}", self.mmio_base, self.irq);
+
         self.bus
             .insert(Arc::new(Mutex::new(mmio_device)), self.mmio_base, MMIO_LEN)
             .map_err(Error::BusError)?;
