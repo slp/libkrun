@@ -290,8 +290,8 @@ impl VirtioGpu {
             virgl_flags,
             0,
         )
-        .set_display_width(1280)
-        .set_display_height(960)
+        .set_display_width(1920)
+        .set_display_height(720)
         .set_use_egl(true)
         .set_use_vulkan(true)
         .set_use_gles(true)

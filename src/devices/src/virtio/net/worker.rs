@@ -414,6 +414,7 @@ impl NetWorker {
             }
 
             let len = std::cmp::min(frame_slice.len(), descriptor.len as usize);
+            log::warn!("frame_len={}, descriptor_len={}", frame_slice.len(), descriptor.len);
             match self.mem.write_slice(&frame_slice[..len], descriptor.addr) {
                 Ok(()) => {
                     frame_slice = &frame_slice[len..];

@@ -132,7 +132,7 @@ impl Input {
             subsel: 0,
             intc: None,
             irq_line: None,
-            ev_dev: Device::open("/dev/input/event4").unwrap(),
+            ev_dev: Device::open("/dev/input/event5").unwrap(),
             worker_thread: None,
             worker_stopfd: EventFd::new(utils::eventfd::EFD_NONBLOCK)
                 .map_err(InputError::EventFd)?,

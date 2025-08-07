@@ -1883,15 +1883,18 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
 
     let boot_source = BootSourceConfig {
         kernel_cmdline_prolog: Some(format!(
-            "{} init={} {} {} {} {}",
+            //"{} init={} {} {} {} {}",
+            "{}",
             DEFAULT_KERNEL_CMDLINE,
+            /*
             INIT_PATH,
             ctx_cfg.get_exec_path(),
             ctx_cfg.get_workdir(),
             ctx_cfg.get_rlimits(),
             ctx_cfg.get_env(),
+            */
         )),
-        kernel_cmdline_epilog: Some(format!(" -- {}", ctx_cfg.get_args())),
+        kernel_cmdline_epilog: None,
     };
 
     if ctx_cfg.vmr.set_boot_source(boot_source).is_err() {

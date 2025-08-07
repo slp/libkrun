@@ -94,6 +94,7 @@ impl BlockWorker {
     }
 
     fn work(mut self) {
+        debug!("starting worker thread");
         let virtq_ev_fd = self.queue_evt.as_raw_fd();
         let stop_ev_fd = self.stop_fd.as_raw_fd();
 
@@ -115,6 +116,7 @@ impl BlockWorker {
             let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
             match epoll.wait(epoll_events.len(), -1, epoll_events.as_mut_slice()) {
                 Ok(ev_cnt) => {
+                    error!("EVENT");
                     for event in &epoll_events[0..ev_cnt] {
                         let source = event.fd();
                         let event_set = event.event_set();
@@ -152,6 +154,7 @@ impl BlockWorker {
 
     /// Process device virtio queue(s).
     fn process_virtio_queues(&mut self) {
+        error!("process_virtio_queues");
         let mem = self.mem.clone();
         loop {
             self.queue.disable_notification(&mem).unwrap();
@@ -165,6 +168,7 @@ impl BlockWorker {
     }
 
     fn process_queue(&mut self, mem: &GuestMemoryMmap) {
+        error!("process_queue");
         while let Some(head) = self.queue.pop(mem) {
             let mut reader = match Reader::new(mem, head.clone()) {
                 Ok(r) => r,
@@ -219,6 +223,7 @@ impl BlockWorker {
         reader: &mut Reader,
         writer: &mut Writer,
     ) -> result::Result<usize, RequestError> {
+        error!("process_request");
         match request_header.request_type {
             VIRTIO_BLK_T_IN => {
                 let data_len = writer.available_bytes() - 1;

@@ -94,6 +94,7 @@ impl Console {
     }
 
     fn read_control_queue_event(&mut self, event: &EpollEvent) {
+        debug!("console: control_queue_event");
         let event_set = event.event_set();
         if event_set != EventSet::IN {
             warn!("Unexpected event {event_set:?}");
@@ -107,6 +108,7 @@ impl Console {
 
 impl Subscriber for Console {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
+        error!("console event");
         let source = event.fd();
 
         let control_rxq = self.queue_events[CONTROL_RXQ_INDEX].as_raw_fd();

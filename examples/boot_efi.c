@@ -185,7 +185,7 @@ int main(int argc, char *const argv[])
     }
 
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
-    if (err = krun_set_vm_config(ctx_id, 8, 4096)) {
+    if (err = krun_set_vm_config(ctx_id, 4, 3072)) {
         errno = -err;
         perror(
             "Error configuring the number of vCPUs and/or the amount of RAM");
@@ -193,7 +193,7 @@ int main(int argc, char *const argv[])
     }
 
     if (err = krun_add_disk(ctx_id, "vda",
-                            "/home/slp/aaos15-images-arm64/qemu/system.img",
+                            "/home/slp/aaos15-images-arm64/qemu/os_composite.img",
                             false)) {
         errno = -err;
         perror("Error configuring disk image");
@@ -241,7 +241,7 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-    if (err = krun_set_display(ctx_id, 0, 1280, 960)) {
+    if (err = krun_set_display(ctx_id, 0, 1920, 720)) {
         errno = -err;
         perror("Error adding a display");
         return -1;

@@ -822,7 +822,7 @@ pub fn build_microvm(
         vm_resources.console_output.clone(),
     )?;
     */
-    attach_android_devices(&mut vmm, event_manager, intc.clone())?;
+    attach_android_devices_mports(&mut vmm, event_manager, intc.clone())?;
 
     #[cfg(not(any(feature = "tee", feature = "nitro")))]
     let export_table: Option<ExportTable> = if cfg!(feature = "gpu") {
@@ -2040,6 +2040,128 @@ fn attach_android_devices(
 
         hvc_num += 1;
     }
+
+    Ok(())
+}
+
+fn attach_android_devices_mports(
+    vmm: &mut Vmm,
+    event_manager: &mut EventManager,
+    intc: IrqChip,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let mut ports: Vec<PortDescription> = Vec::new();
+
+    {
+        let file = File::options()
+            .append(true)
+            .open("/home/slp/aaos15-images-arm64/qemu/kernel-log-pipe")
+            .unwrap();
+
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_file(file).unwrap()),
+        });
+    }
+
+    {
+        let file = File::options()
+            .append(true)
+            .open("/home/slp/aaos15-images-arm64/qemu/hvc1")
+            .unwrap();
+
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_file(file).unwrap()),
+        });
+    }
+
+    {
+        let file_in = File::open("/home/slp/aaos15-images-arm64/qemu/logcat-pipe").unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open("/home/slp/aaos15-images-arm64/qemu/logcat-pipe")
+            .unwrap();
+
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        });
+    }
+
+    let pipes = vec![
+        "/home/slp/aaos15-images-arm64/qemu/keymaster_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/gatekeeper_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/bt_fifo_vm",
+    ];
+
+    for pipe in pipes {
+        println!("adding pipe {}", pipe);
+
+        let file_in = File::open(format!("{pipe}.in")).unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open(format!("{pipe}.out"))
+            .unwrap();
+
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        });
+    }
+
+    for i in 1..5 {
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_null().unwrap()),
+        });
+    }
+
+    let pipes = vec![
+        "/home/slp/aaos15-images-arm64/qemu/oemlock_fifo_vm",
+        "/home/slp/aaos15-images-arm64/qemu/keymint_fifo_vm",
+    ];
+
+    for pipe in pipes {
+        println!("adding pipe {}", pipe);
+
+        let file_in = File::open(format!("{pipe}.in")).unwrap();
+        let file_out = File::options()
+            .append(true)
+            .open(format!("{pipe}.out"))
+            .unwrap();
+
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_file(&file_in).unwrap()),
+            output: Some(port_io::output_file(file_out).unwrap()),
+        });
+    }
+
+    for i in 1..5 {
+        ports.push(PortDescription::Console {
+            input: Some(port_io::input_empty().unwrap()),
+            output: Some(port_io::output_null().unwrap()),
+        });
+    }
+
+        let console = Arc::new(Mutex::new(
+            devices::virtio::Console::new(format!("hvc0"), ports).unwrap(),
+        ));
+
+        console.lock().unwrap().set_intc(intc.clone());
+
+        event_manager
+            .add_subscriber(console.clone())
+            .map_err(RegisterEvent)?;
+
+        // The device mutex mustn't be locked here otherwise it will deadlock.
+        attach_mmio_device(
+            vmm,
+            format!("hvc0"),
+            MmioTransport::new(vmm.guest_memory().clone(), console),
+        )
+        .map_err(RegisterFsDevice)?;
 
     Ok(())
 }

@@ -85,6 +85,10 @@ impl NetBackend for Tap {
             }
         };
         debug!("Read eth frame from tap: {frame_length} bytes");
+        if frame_length > 1500 {
+            debug!("dropping frame: {frame_length}");
+            return Err(ReadError::NothingRead);
+        }
         Ok(frame_length)
     }
 

@@ -1295,13 +1295,13 @@ impl Vcpu {
                 }
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoIn(addr, data) => {
-                    //debug!("IoIn: {:x}, {:?}", addr, data);
+                    //println!("IoIn: {:x}, {:?}", addr, data);
                     self.io_bus.read(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoOut(addr, data) => {
-                    //debug!("IoOut: {:x}, {:?}", addr, data);
+                    //println!("IoOut: {:x}, {:?}", addr, data);
                     self.io_bus.write(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)
                 }

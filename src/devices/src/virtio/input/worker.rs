@@ -67,7 +67,7 @@ impl InputWorker {
             irq_line,
 
             mem,
-            ev_dev: Device::open("/dev/input/event4").unwrap(),
+            ev_dev: Device::open("/dev/input/event5").unwrap(),
             ev_list: VecDeque::new(),
             stop_fd,
         }
