@@ -154,7 +154,7 @@ impl Input {
             device_state: DeviceState::Inactive,
             cfg: InputConfig::new(),
             worker_thread: None,
-            worker_stopfd: EventFd::new(libc::EFD_NONBLOCK).map_err(InputError::EventFd)?,
+            worker_stopfd: EventFd::new(utils::eventfd::EFD_NONBLOCK).map_err(InputError::EventFd)?,
         })
     }
 

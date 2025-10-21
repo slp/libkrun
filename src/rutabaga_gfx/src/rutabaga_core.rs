@@ -565,7 +565,6 @@ impl Rutabaga {
                 .components
                 .get_mut(&self.default_component)
                 .ok_or(RutabagaError::InvalidComponent)?;
-
             component.create_fence(fence)?;
         }
 
@@ -1288,7 +1287,7 @@ impl RutabagaBuilder {
                 rutabaga_components.insert(RutabagaComponentType::Gfxstream, gfxstream);
 
                 push_capset(RUTABAGA_CAPSET_GFXSTREAM_VULKAN);
-                push_capset(RUTABAGA_CAPSET_GFXSTREAM_MAGMA);
+                //push_capset(RUTABAGA_CAPSET_GFXSTREAM_MAGMA);
                 push_capset(RUTABAGA_CAPSET_GFXSTREAM_GLES);
                 push_capset(RUTABAGA_CAPSET_GFXSTREAM_COMPOSER);
             }

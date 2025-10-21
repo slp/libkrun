@@ -63,7 +63,6 @@ impl<T: Send> PollableChannelReciever<T> {
             Err(e) if e.kind() == ErrorKind::WouldBlock => (),
             Err(e) => return Err(e),
         }
-
         Ok(data_lock.pop_front())
     }
 

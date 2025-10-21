@@ -1,8 +1,8 @@
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use gtk::{gdk::MemoryFormat, glib::Bytes};
 use krun_display::{
-    DisplayBackendBasicFramebuffer, DisplayBackendError, DisplayBackendNew, MAX_DISPLAYS, Rect,
-    ResourceFormat,
+    DisplayBackendBasicFramebuffer, DisplayBackendError, DisplayBackendNew, Rect, ResourceFormat,
+    MAX_DISPLAYS,
 };
 use log::error;
 use std::mem;
@@ -69,6 +69,13 @@ impl DisplayBackendBasicFramebuffer for GtkDisplayBackend {
         height: u32,
         format: ResourceFormat,
     ) -> Result<(), DisplayBackendError> {
+        /*
+        let display_width = display_width + 32;
+        let width = width + 32;
+        let display_height = display_height + 60;
+        let height = height + 60;
+        */
+
         let required_buffer_size =
             width as usize * height as usize * ResourceFormat::BYTES_PER_PIXEL;
         if let Some(ref mut scanout) = self.scanouts[scanout_id as usize] {
@@ -92,16 +99,19 @@ impl DisplayBackendBasicFramebuffer for GtkDisplayBackend {
             });
         }
 
-        self.channel
-            .send(DisplayEvent::ConfigureScanout {
-                scanout_id,
-                display_width,
-                display_height,
-                width,
-                height,
-                format: resource_format_into_gdk(format),
-            })
-            .unwrap();
+        let ret = self.channel.send(DisplayEvent::ConfigureScanout {
+            scanout_id,
+            display_width,
+            display_height,
+            width,
+            height,
+            format: resource_format_into_gdk(format),
+        });
+
+        if let Err(err) = ret {
+            println!("Error sending channel");
+        }
+
         Ok(())
     }
 

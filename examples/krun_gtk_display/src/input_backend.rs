@@ -1,10 +1,13 @@
 use crate::input_constants::*;
-use crate::{TouchScreenOptions, input_constants};
+use crate::{input_constants, TouchScreenOptions};
+use gtk::glib::GString;
 use krun_input::{
-    InputAbsInfo, InputBackendError, InputDeviceIds, InputEvent as KrunInputEvent, InputEventType,
-    InputEventsImpl, InputQueryConfig, ObjectNew, write_bitmap,
+    write_bitmap, InputAbsInfo, InputBackendError, InputDeviceIds, InputEvent as KrunInputEvent,
+    InputEventType, InputEventsImpl, InputQueryConfig, ObjectNew,
 };
+use lazy_static::lazy_static;
 use std::cmp::max;
+use std::collections::HashMap;
 use std::os::fd::{AsFd, BorrowedFd};
 use utils::pollable_channel::PollableChannelReciever;
 
@@ -20,9 +23,22 @@ pub const TOUCHSCREEN_PRODUCT_ID: u16 = 0x0003;
 // GTK to Linux input key code mapping
 pub const GTK_KEY_OFFSET: u32 = 8;
 
+lazy_static! {
+    static ref KEY_MAP: HashMap<GString, u16> = {
+        let mut m = HashMap::new();
+        m.insert("Up".into(), KEY_UP);
+        m.insert("Down".into(), KEY_DOWN);
+        m.insert("Left".into(), KEY_LEFT);
+        m.insert("Right".into(), KEY_RIGHT);
+        m.insert("a".into(), KEY_A);
+        m
+    };
+}
+
 /// Convert GTK key code to Linux input key code
 /// Returns the Linux input key code or 0 if no mapping exists
-pub fn gtk_keycode_to_linux(gtk_key: u32) -> u16 {
+pub fn gtk_keycode_to_linux(key: Option<GString>) -> u16 {
+    /*
     // GTK key codes are typically offset by 8 from Linux input key codes
     if gtk_key >= GTK_KEY_OFFSET {
         let linux_key = (gtk_key - GTK_KEY_OFFSET) as u16;
@@ -34,6 +50,16 @@ pub fn gtk_keycode_to_linux(gtk_key: u32) -> u16 {
         }
     } else {
         0 // Invalid key
+    }
+    */
+    if let Some(tkey) = key {
+        if KEY_MAP.contains_key(&tkey) {
+            *KEY_MAP.get(&tkey).unwrap()
+        } else {
+            0
+        }
+    } else {
+        0
     }
 }
 

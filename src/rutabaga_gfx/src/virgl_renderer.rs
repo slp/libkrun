@@ -138,6 +138,8 @@ impl RutabagaContext for VirglRendererContext {
         // this assumption.
         let flags: u32 = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
 
+        println!("rutabaga create_fence");
+
         let ret = unsafe {
             virgl_renderer_context_create_fence(
                 fence.ctx_id,
@@ -179,11 +181,11 @@ extern "C" fn debug_callback(fmt: *const ::std::os::raw::c_char, ap: stdio::va_l
     };
 
     if printed_len < 0 {
-        debug!("rutabaga_gfx::virgl_renderer::debug_callback: vsnprintf returned {printed_len}");
+        println!("rutabaga_gfx::virgl_renderer::debug_callback: vsnprintf returned {printed_len}");
     } else {
         // vsnprintf returns the number of chars that *would* have been printed
         let len = min(printed_len as usize, BUF_LEN - 1);
-        debug!("{}", String::from_utf8_lossy(&v[..len]));
+        println!("{}", String::from_utf8_lossy(&v[..len]));
     }
 }
 
@@ -312,7 +314,7 @@ impl VirglRenderer {
             return Err(RutabagaError::AlreadyInUse);
         }
 
-        unsafe { virgl_set_debug_callback(Some(debug_callback)) };
+        //unsafe { virgl_set_debug_callback(Some(debug_callback)) };
 
         // Cookie is intentionally never freed because virglrenderer never gets uninitialized.
         // Otherwise, Resource and Context would become invalid because their lifetime is not tied

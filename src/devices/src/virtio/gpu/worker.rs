@@ -93,10 +93,14 @@ impl Worker {
         loop {
             let _ = self.receiver.recv().unwrap();
             if self.process_queue(&mut virtio_gpu, 0) {
+                debug!("signalling queue");
                 if let Err(e) = self.interrupt.try_signal_used_queue() {
                     error!("Error signaling queue: {e:?}");
                 }
             }
+            debug!("before context_poll");
+            virtio_gpu.context_poll();
+            debug!("after context_poll");
         }
     }
 
@@ -109,6 +113,8 @@ impl Worker {
         reader: &mut Reader,
     ) -> VirtioGpuResult {
         virtio_gpu.force_ctx_0();
+
+        debug!("gpu_command: {:?}", cmd);
 
         match cmd {
             GpuCommand::GetDisplayInfo => virtio_gpu.display_info(),
@@ -319,7 +325,8 @@ impl Worker {
                 )
             }
             GpuCommand::SetScanoutBlob(_info) => {
-                panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
+                println!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
+                Ok(GpuResponse::OkNoData)
             }
             GpuCommand::ResourceMapBlob(info) => {
                 let resource_id = info.resource_id;

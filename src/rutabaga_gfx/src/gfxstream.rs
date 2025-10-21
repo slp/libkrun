@@ -457,6 +457,7 @@ impl RutabagaComponent for Gfxstream {
             blob_mem: 0,
             blob_flags: 0,
             map_info: None,
+            map_ptr: None,
             info_2d: None,
             info_3d: None,
             vulkan_info: None,
@@ -570,6 +571,8 @@ impl RutabagaComponent for Gfxstream {
             None => (null_mut(), 0),
         };
 
+        log::error!("rutabaga transfer_read");
+
         // Safe because only stack variables of the appropriate type are used.
         let ret = unsafe {
             stream_renderer_transfer_read_iov(
@@ -630,13 +633,22 @@ impl RutabagaComponent for Gfxstream {
 
         ret_to_res(ret)?;
 
+        println!("export_blob in gfxstream check1");
+        let handle = self.export_blob(resource_id).ok();
+        if handle.is_some() {
+            println!("export_blob in gfxstream is_some");
+        } else {
+            println!("export_blob in gfxstream is_none");
+        }
+
         Ok(RutabagaResource {
             resource_id,
-            handle: self.export_blob(resource_id).ok(),
+            handle,
             blob: true,
             blob_mem: resource_create_blob.blob_mem,
             blob_flags: resource_create_blob.blob_flags,
             map_info: self.map_info(resource_id).ok(),
+            map_ptr: None,
             info_2d: None,
             info_3d: None,
             vulkan_info: self.vulkan_info(resource_id).ok(),

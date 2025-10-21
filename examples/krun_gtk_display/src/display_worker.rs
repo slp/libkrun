@@ -12,24 +12,24 @@ use std::time::Duration;
 
 use utils::pollable_channel::{PollableChannelReciever, PollableChannelSender};
 
-use crate::input_backend::{MAX_FINGERS, gtk_keycode_to_linux};
+use crate::input_backend::{gtk_keycode_to_linux, MAX_FINGERS};
 use crate::input_constants::{
     ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_X, ABS_Y, BTN_TOUCH,
     SYN_REPORT,
 };
 use gtk::{
-    AlertDialog, Align, Application, ApplicationWindow, Button, EventControllerKey,
-    EventControllerLegacy, EventControllerMotion, HeaderBar, Overlay, Picture, Revealer,
-    RevealerTransitionType, Widget, Window,
     gdk::{self, EventSequence, EventType, MemoryFormat, ModifierType, TouchEvent},
     gio::ActionEntry,
     gio::Cancellable,
     glib::{
-        self, Bytes, ControlFlow, IOCondition, Propagation, clone::Downgrade,
-        timeout_add_local_once, unix_fd_add_local,
+        self, clone::Downgrade, timeout_add_local_once, unix_fd_add_local, Bytes, ControlFlow,
+        IOCondition, Propagation,
     },
     graphene::Point,
     prelude::*,
+    AlertDialog, Align, Application, ApplicationWindow, Button, EventControllerKey,
+    EventControllerLegacy, EventControllerMotion, HeaderBar, Overlay, Picture, Revealer,
+    RevealerTransitionType, Widget, Window,
 };
 use krun_display::MAX_DISPLAYS;
 
@@ -432,9 +432,13 @@ fn attach_keyboard(keyboard_tx: EventSender, widget: &impl IsA<Widget>) {
     let pressed_keys = Rc::new(RefCell::new(HashSet::new()));
     let pressed_keys_clone = pressed_keys.clone();
     key_controller.connect_key_pressed(move |_controller, key, keycode, _modifiers| {
-        let linux_keycode = gtk_keycode_to_linux(keycode);
+        let linux_keycode = gtk_keycode_to_linux(key.name());
+        let unicode = key.to_unicode();
+        if let Some(unicode) = unicode {
+            debug!("Unicode: {}", unicode);
+        }
         if linux_keycode == 0 {
-            debug!("Unknown key GTK key={}, code={}", key, keycode);
+            debug!("Unknown key GTK key={}, code={}", key, keycode,);
             return Propagation::Proceed;
         } else {
             debug!(
@@ -461,7 +465,7 @@ fn attach_keyboard(keyboard_tx: EventSender, widget: &impl IsA<Widget>) {
     // Handle key release events
     let forwarder_release = keyboard_tx.clone();
     key_controller.connect_key_released(move |_controller, key, keycode, _modifiers| {
-        let linux_keycode = gtk_keycode_to_linux(keycode);
+        let linux_keycode = gtk_keycode_to_linux(key.name());
         let input_event = InputEvent {
             type_: InputEventType::Key as u16,
             code: linux_keycode,
@@ -693,14 +697,11 @@ impl DisplayWorker {
                     format,
                 } => {
                     if let Some(ref mut scanout) = scanouts[scanout_id as usize] {
-                        trace!(
+                        debug!(
                             "Update params of scanout {scanout_id}: width={width} height={height} format={format:?}"
                         );
                         scanout.reconfigure(width as i32, height as i32, format);
                     } else {
-                        debug!(
-                            "Enable scanout {scanout_id} width={width} height={height} format={format:?}"
-                        );
                         scanouts[scanout_id as usize] = Some(ScanoutWindow::new(
                             &self.app,
                             &format!(
@@ -721,7 +722,6 @@ impl DisplayWorker {
                     }
                 }
                 DisplayEvent::DisableScanout { scanout_id } => {
-                    debug!("Disable scanout {scanout_id}");
                     scanouts[scanout_id as usize] = None;
                 }
                 DisplayEvent::UpdateScanout {

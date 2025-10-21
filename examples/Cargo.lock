@@ -619,6 +619,7 @@ dependencies = [
  "gtk4",
  "krun_display",
  "krun_input",
+ "lazy_static",
  "libc",
  "log",
  "utils",
@@ -635,7 +636,9 @@ dependencies = [
  "gtk_display",
  "krun-sys",
  "krun_input",
+ "lazy_static",
  "log",
+ "mac_address",
  "regex",
 ]
 
@@ -765,6 +768,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
+name = "mac_address"
+version = "1.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0aeb26bf5e836cc1c341c8106051b573f1766dfa05aa87f0b98be5e51b02303"
+dependencies = [
+ "nix 0.29.0",
+ "winapi",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -784,6 +797,19 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
 
 [[package]]
 name = "nix"
@@ -1111,7 +1137,7 @@ dependencies = [
  "kvm-bindings",
  "libc",
  "log",
- "nix",
+ "nix 0.30.1",
  "vmm-sys-util",
 ]
 
