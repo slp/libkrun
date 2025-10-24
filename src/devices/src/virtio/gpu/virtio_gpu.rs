@@ -786,32 +786,13 @@ impl VirtioGpu {
         }
         let addr = shm_region.host_addr + offset;
 
-        if let Ok(export) = self.rutabaga.export_blob(resource_id) {
-            if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_SHM {
-                let ret = unsafe {
-                    libc::mmap(
-                        addr as *mut libc::c_void,
-                        resource.size as usize,
-                        prot,
-                        libc::MAP_SHARED | libc::MAP_FIXED,
-                        export.os_handle.as_raw_fd(),
-                        0 as libc::off_t,
-                    )
-                };
-                if ret == libc::MAP_FAILED {
-                    error!("failed to mmap resource in shm region");
-                    return Err(ErrUnspec);
-                }
-            } else {
-                self.rutabaga.resource_map(
-                    resource_id,
-                    addr,
-                    resource.size,
-                    prot,
-                    libc::MAP_SHARED | libc::MAP_FIXED,
-                )?;
-            }
-        }
+        self.rutabaga.resource_map(
+            resource_id,
+            addr,
+            resource.size,
+            prot,
+            libc::MAP_SHARED | libc::MAP_FIXED,
+        );
 
         resource.shmem_offset = Some(offset);
         // Access flags not a part of the virtio-gpu spec.

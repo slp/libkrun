@@ -702,13 +702,7 @@ impl RutabagaComponent for VirglRenderer {
         #[cfg(feature = "virgl_resource_map2")]
         {
             let ret = unsafe {
-                virgl_renderer_resource_map2(
-                    _resource_id,
-                    _addr as *mut libc::c_void,
-                    _size,
-                    _prot,
-                    _flags,
-                )
+                virgl_renderer_resource_map_fixed(_resource_id, _addr as *mut libc::c_void)
             };
             if ret != 0 {
                 return Err(RutabagaError::MappingFailed(ret));
