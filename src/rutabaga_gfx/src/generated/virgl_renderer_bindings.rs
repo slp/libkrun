@@ -445,3 +445,12 @@ extern "C" {
 extern "C" {
     pub fn virgl_renderer_context_get_poll_fd(ctx_id: u32) -> ::std::os::raw::c_int;
 }
+unsafe extern "C" {
+    pub unsafe fn virgl_renderer_set_scanout(res_handle: u32) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub unsafe fn virgl_renderer_flush_scanout() -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub unsafe fn virgl_renderer_sdl_poll() -> ::std::os::raw::c_int;
+}

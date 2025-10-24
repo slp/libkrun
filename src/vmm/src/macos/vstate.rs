@@ -358,6 +358,7 @@ impl Vcpu {
     fn run_emulation(&mut self, hvf_vcpu: &mut HvfVcpu) -> Result<VcpuEmulation> {
         let vcpuid = hvf_vcpu.id();
 
+        debug!("vCPU {vcpuid} enters");
         match hvf_vcpu.run(self.vcpu_list.clone()) {
             Ok(exit) => match exit {
                 VcpuExit::Breakpoint => {
@@ -387,6 +388,7 @@ impl Vcpu {
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         debug!("vCPU {vcpuid} MMIO read 0x{addr:x}");
                         mmio_bus.read(vcpuid, addr, data);
+                        debug!("vCPU {vcpuid} MMIO read 0x{addr:x} ENDED");
                     }
                     Ok(VcpuEmulation::Handled)
                 }

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use utils::eventfd::EventFd;
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
@@ -49,6 +49,8 @@ pub struct Gpu {
     export_table: Option<ExportTable>,
     displays: Box<[DisplayInfo]>,
     display_backend: DisplayBackend<'static>,
+    gpu_start_sender: Sender<bool>,
+    gpu_start_receiver: Receiver<bool>,
 }
 
 impl Gpu {
@@ -68,6 +70,8 @@ impl Gpu {
         let queue_ctl = Arc::new(Mutex::new(queues[CTL_INDEX].clone()));
         let queue_cur = Arc::new(Mutex::new(queues[CUR_INDEX].clone()));
 
+        let (gpu_start_sender, gpu_start_receiver) = unbounded();
+
         Ok(Gpu {
             queue_ctl,
             queue_cur,
@@ -85,6 +89,8 @@ impl Gpu {
             export_table: None,
             displays,
             display_backend,
+            gpu_start_sender,
+            gpu_start_receiver,
         })
     }
 
@@ -119,6 +125,47 @@ impl Gpu {
 
     pub fn set_export_table(&mut self, export_table: ExportTable) {
         self.export_table = Some(export_table);
+    }
+
+    pub fn create_gpu_worker(&mut self) -> Option<Worker> {
+        if let Err(e) = self.gpu_start_receiver.try_recv() {
+            return None;
+        }
+
+        let (mem, interrupt) = match self.device_state {
+            DeviceState::Activated(ref mem, ref interrupt) => (mem, interrupt),
+            // This should never happen, it's been already validated in the event handler.
+            DeviceState::Inactive => unreachable!(),
+        };
+
+        let shm_region = match self.shm_region.as_ref() {
+            Some(s) => s.clone(),
+            None => panic!("virtio_gpu: missing SHM region"),
+        };
+
+        self.queue_ctl = Arc::new(Mutex::new(self.queues[CTL_INDEX].clone()));
+        self.queue_cur = Arc::new(Mutex::new(self.queues[CUR_INDEX].clone()));
+
+        let (sender, receiver) = unbounded();
+        let worker = Worker::new(
+            receiver,
+            mem.clone(),
+            self.queue_ctl.clone(),
+            interrupt.clone(),
+            shm_region,
+            self.virgl_flags,
+            #[cfg(target_os = "macos")]
+            self.map_sender.clone(),
+            self.export_table.take(),
+            self.displays.clone(),
+            self.display_backend,
+        );
+        self.sender = Some(sender);
+        if self.activate_evt.write(1).is_err() {
+            error!("Cannot write to activate_evt",);
+        }
+
+        Some(worker)
     }
 
     /*
@@ -249,36 +296,9 @@ impl VirtioDevice for Gpu {
             return Err(ActivateError::BadActivate);
         }
 
-        let shm_region = match self.shm_region.as_ref() {
-            Some(s) => s.clone(),
-            None => panic!("virtio_gpu: missing SHM region"),
-        };
-
-        self.queue_ctl = Arc::new(Mutex::new(self.queues[CTL_INDEX].clone()));
-        self.queue_cur = Arc::new(Mutex::new(self.queues[CUR_INDEX].clone()));
-
-        let (sender, receiver) = unbounded();
-        let worker = Worker::new(
-            receiver,
-            mem.clone(),
-            self.queue_ctl.clone(),
-            interrupt.clone(),
-            shm_region,
-            self.virgl_flags,
-            #[cfg(target_os = "macos")]
-            self.map_sender.clone(),
-            self.export_table.take(),
-            self.displays.clone(),
-            self.display_backend,
-        );
-        worker.run();
-
-        self.sender = Some(sender);
-
-        if self.activate_evt.write(1).is_err() {
-            error!("Cannot write to activate_evt",);
-            return Err(ActivateError::BadActivate);
-        }
+        error!("gpu activate send");
+        self.gpu_start_sender.send(true);
+        error!("gpu activate send AFTER");
 
         self.device_state = DeviceState::Activated(mem, interrupt);
 

@@ -418,6 +418,7 @@ impl VirtioGpu {
             return Err(ErrUnspec);
         };
 
+        /*
         let display_info = self
             .displays
             .get(scanout_id as usize)
@@ -431,6 +432,9 @@ impl VirtioGpu {
             height,
             format,
         )?;
+        */
+
+        self.rutabaga.set_scanout(resource_id);
 
         *scanout = Some(VirtioGpuScanout { resource_id });
         Ok(OkNoData)
@@ -476,6 +480,7 @@ impl VirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
+            /*
             let (frame_id, buffer) = self.display_backend.alloc_frame(scanout_id)?;
             if let Err(e) = Self::read_2d_resource(&mut self.rutabaga, resource, buffer) {
                 log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
@@ -483,6 +488,8 @@ impl VirtioGpu {
             }
             self.display_backend
                 .present_frame(scanout_id, frame_id, Some(&rect))?
+                */
+            self.rutabaga.flush_scanout();
         }
 
         #[cfg(windows)]

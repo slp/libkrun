@@ -25,7 +25,6 @@ use rand::distr::{Alphanumeric, SampleString};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::env;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::ffi::{c_void, CStr};
@@ -40,6 +39,8 @@ use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::{env, thread};
 use utils::eventfd::EventFd;
 use vmm::resources::{ConsoleConfig, ConsoleType, VmResources};
 #[cfg(feature = "blk")]
@@ -2456,6 +2457,19 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     #[cfg(any(feature = "amd-sev", feature = "tdx"))]
     vmm::worker::start_worker_thread(_vmm.clone(), _receiver.clone()).unwrap();
 
+    thread::Builder::new()
+        .name("event manager".into())
+        .spawn(move || loop {
+            match event_manager.run() {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Error in EventManager loop: {e:?}");
+                    return -libc::EINVAL;
+                }
+            }
+        })
+        .unwrap();
+    /*
     loop {
         match event_manager.run() {
             Ok(_) => {}
@@ -2465,6 +2479,23 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
             }
         }
     }
+    */
+
+    let gpu = _vmm.lock().unwrap().get_gpu();
+    if let Some(gpu) = gpu {
+        let gpu_worker = {
+            || loop {
+                let mut gpu_worker = gpu.lock().unwrap().create_gpu_worker();
+                if let Some(gpu_worker) = gpu_worker {
+                    return gpu_worker;
+                }
+                thread::sleep(Duration::from_millis(1000));
+            }
+        };
+        gpu_worker().run();
+    }
+
+    0
 }
 
 #[cfg(feature = "nitro")]

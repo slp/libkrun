@@ -6,13 +6,14 @@ use gtk_display::{
 };
 
 use krun_sys::{
-    KRUN_LOG_LEVEL_TRACE, KRUN_LOG_LEVEL_WARN, KRUN_LOG_STYLE_ALWAYS, KRUN_LOG_TARGET_DEFAULT,
-    VIRGLRENDERER_RENDER_SERVER, VIRGLRENDERER_THREAD_SYNC, VIRGLRENDERER_USE_ASYNC_FENCE_CB,
-    VIRGLRENDERER_USE_EGL, VIRGLRENDERER_VENUS, krun_add_display, krun_add_input_device, VIRGLRENDERER_USE_GLES,
-    krun_add_input_device_fd, krun_create_ctx, krun_display_set_dpi, krun_add_disk,
-    krun_display_set_physical_size, krun_display_set_refresh_rate, krun_init_log,
-    krun_set_display_backend, krun_set_exec, krun_set_gpu_options2, krun_set_root,
-    krun_set_vm_config, krun_start_enter, COMPAT_NET_FEATURES, NET_FLAG_VFKIT, krun_add_net_unixgram,
+    krun_add_disk, krun_add_display, krun_add_input_device, krun_add_input_device_fd,
+    krun_add_net_unixgram, krun_create_ctx, krun_display_set_dpi, krun_display_set_physical_size,
+    krun_display_set_refresh_rate, krun_init_log, krun_set_display_backend, krun_set_exec,
+    krun_set_gpu_options2, krun_set_root, krun_set_vm_config, krun_start_enter,
+    COMPAT_NET_FEATURES, KRUN_LOG_LEVEL_TRACE, KRUN_LOG_LEVEL_WARN, KRUN_LOG_STYLE_ALWAYS,
+    KRUN_LOG_TARGET_DEFAULT, NET_FLAG_VFKIT, VIRGLRENDERER_RENDER_SERVER,
+    VIRGLRENDERER_THREAD_SYNC, VIRGLRENDERER_USE_ASYNC_FENCE_CB, VIRGLRENDERER_USE_EGL,
+    VIRGLRENDERER_USE_GLES, VIRGLRENDERER_VENUS,
 };
 use log::LevelFilter;
 use mac_address::MacAddress;
@@ -123,8 +124,8 @@ struct Args {
 
 fn krun_thread(
     args: &Args,
-    display_backend_handle: DisplayBackendHandle,
-    input_device_handles: Vec<InputBackendHandle>,
+    //display_backend_handle: DisplayBackendHandle,
+    //input_device_handles: Vec<InputBackendHandle>,
 ) -> anyhow::Result<()> {
     unsafe {
         if let Some(path) = &args.color_log {
@@ -153,21 +154,21 @@ fn krun_thread(
 
         krun_call!(krun_set_gpu_options2(
             ctx,
-            VIRGLRENDERER_USE_EGL | VIRGLRENDERER_VENUS | VIRGLRENDERER_USE_GLES | VIRGLRENDERER_THREAD_SYNC,
-            4*1024*1024
+            VIRGLRENDERER_VENUS | VIRGLRENDERER_USE_GLES | VIRGLRENDERER_THREAD_SYNC,
+            4 * 1024 * 1024
         ))?;
 
-/*
-        krun_call!(krun_set_gpu_options(
-            ctx,
-            VIRGLRENDERER_USE_EGL
-                | VIRGLRENDERER_VENUS
-                | VIRGLRENDERER_RENDER_SERVER
-                | VIRGLRENDERER_THREAD_SYNC
-                | VIRGLRENDERER_USE_ASYNC_FENCE_CB,
-            4096
-        ))?;
-*/
+        /*
+                krun_call!(krun_set_gpu_options(
+                    ctx,
+                    VIRGLRENDERER_USE_EGL
+                        | VIRGLRENDERER_VENUS
+                        | VIRGLRENDERER_RENDER_SERVER
+                        | VIRGLRENDERER_THREAD_SYNC
+                        | VIRGLRENDERER_USE_ASYNC_FENCE_CB,
+                    4096
+                ))?;
+        */
 
         /*
                 if let Some(root_dir) = &args.root_dir {
@@ -187,12 +188,12 @@ fn krun_thread(
 
         krun_call!(krun_set_vm_config(ctx, 8, 4096))?;
 
-            krun_call!(krun_add_disk(
-                ctx,
-                args.root_dir.as_ptr(),
-                args.root_dir.as_ptr(),
-                false
-            ))?;
+        krun_call!(krun_add_disk(
+            ctx,
+            args.root_dir.as_ptr(),
+            args.root_dir.as_ptr(),
+            false
+        ))?;
 
         let mac = MacAddress::from_str("5a:94:ef:e4:0c:ee").unwrap();
         krun_call!(krun_add_net_unixgram(
@@ -220,6 +221,7 @@ fn krun_thread(
                 }
             };
         }
+        /*
         let display_backend = display_backend_handle.get();
         krun_call!(krun_set_display_backend(
             ctx,
@@ -248,6 +250,7 @@ fn krun_thread(
                 size_of_val(&event_provider_backend),
             ))?;
         }
+        */
 
         krun_call!(krun_start_enter(ctx))?;
     };
@@ -293,14 +296,16 @@ fn main() -> anyhow::Result<()> {
         per_display_inputs,
     )?;
 
-    thread::scope(|s| {
-        s.spawn(|| {
-            if let Err(e) = krun_thread(&args, display_backend, input_backends) {
-                eprintln!("{e}");
-                exit(1);
-            }
-        });
-        display_worker.run()
+    //thread::scope(|s| {
+    if let Err(e) = krun_thread(&args /*, display_backend, input_backends*/) {
+        eprintln!("{e}");
+        exit(1);
+    }
+    /*
+    s.spawn(|| {
     });
+    display_worker.run()
+    */
+    //});
     unreachable!("Expected libkrun (or error handling) to exit the process");
 }

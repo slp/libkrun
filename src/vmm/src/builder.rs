@@ -928,6 +928,7 @@ pub fn build_microvm(
         exit_evt,
         exit_observers: Vec::new(),
         exit_code: exit_code.clone(),
+        gpu: None,
         vm,
         mmio_device_manager,
         #[cfg(target_arch = "x86_64")]
@@ -2127,6 +2128,8 @@ fn attach_gpu_device(
         )
         .unwrap(),
     ));
+
+    vmm.register_gpu(gpu.clone());
 
     event_manager
         .add_subscriber(gpu.clone())

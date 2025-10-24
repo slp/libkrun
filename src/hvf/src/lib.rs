@@ -621,10 +621,12 @@ impl HvfVcpu<'_> {
                 let srt: u32 = ((syndrome >> 16) & 0x1f) as u32;
                 let cm: u32 = ((syndrome >> 8) & 0x1) as u32;
 
+                /*
                 debug!(
                     "EC_DATAABORT {} {} {} {} {} {} {} {}",
                     syndrome, isv as u8, iswrite as u8, s1ptw as u8, sas, len, srt, cm
                 );
+                */
 
                 let pa = self.vcpu_exit.exception.physical_address;
                 self.pending_advance_pc = true;

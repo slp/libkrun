@@ -222,6 +222,17 @@ pub trait RutabagaComponent {
     ) -> RutabagaResult<Box<dyn RutabagaContext>> {
         Err(RutabagaError::Unsupported)
     }
+
+    fn set_scanout(&self, _resource_id: u32) -> RutabagaResult<()> {
+        Err(RutabagaError::Unsupported)
+    }
+
+    fn flush_scanout(&self) -> RutabagaResult<()> {
+        Err(RutabagaError::Unsupported)
+    }
+    fn sdl_poll(&self) -> RutabagaResult<()> {
+        Err(RutabagaError::Unsupported)
+    }
 }
 
 pub trait RutabagaContext {
@@ -1034,6 +1045,34 @@ impl Rutabaga {
             .ok_or(RutabagaError::InvalidContextId)?;
 
         ctx.submit_cmd(commands, fence_ids)
+    }
+
+    pub fn set_scanout(&mut self, resource_id: u32) {
+        let component = self
+            .components
+            .get_mut(&self.default_component)
+            .ok_or(RutabagaError::InvalidComponent)
+            .unwrap();
+
+        component.set_scanout(resource_id);
+    }
+    pub fn flush_scanout(&mut self) {
+        let component = self
+            .components
+            .get_mut(&self.default_component)
+            .ok_or(RutabagaError::InvalidComponent)
+            .unwrap();
+
+        component.flush_scanout();
+    }
+    pub fn sdl_poll(&mut self) {
+        let component = self
+            .components
+            .get_mut(&self.default_component)
+            .ok_or(RutabagaError::InvalidComponent)
+            .unwrap();
+
+        component.sdl_poll();
     }
 }
 

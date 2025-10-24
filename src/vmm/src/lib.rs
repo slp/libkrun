@@ -58,7 +58,7 @@ use crossbeam_channel::Sender;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use devices::fdt;
 use devices::legacy::IrqChip;
-use devices::virtio::VmmExitObserver;
+use devices::virtio::{Gpu, VmmExitObserver};
 use devices::{BusDevice, DeviceType};
 use kernel::cmdline::Cmdline as KernelCmdline;
 use polly::event_manager::{self, EventManager, Subscriber};
@@ -203,6 +203,8 @@ pub struct Vmm {
     vm: Vm,
     exit_observers: Vec<Arc<Mutex<dyn VmmExitObserver>>>,
     exit_code: Arc<AtomicI32>,
+
+    gpu: Option<Arc<Mutex<Gpu>>>,
 
     // Guest VM devices.
     mmio_device_manager: MMIODeviceManager,
@@ -398,6 +400,14 @@ impl Vmm {
     #[cfg(target_os = "macos")]
     pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
         self.vm.remove_mapping(reply_sender, guest_addr, len);
+    }
+
+    pub fn register_gpu(&mut self, gpu: Arc<Mutex<Gpu>>) {
+        self.gpu = Some(gpu);
+    }
+
+    pub fn get_gpu(&self) -> Option<Arc<Mutex<Gpu>>> {
+        self.gpu.clone()
     }
 }
 

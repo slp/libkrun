@@ -810,4 +810,13 @@ impl RutabagaComponent for VirglRenderer {
         ret_to_res(ret)?;
         Ok(Box::new(VirglRendererContext { ctx_id }))
     }
+
+    fn set_scanout(&self, res_handle: u32) -> RutabagaResult<()> {
+        unsafe { virgl_renderer_set_scanout(res_handle) };
+        Ok(())
+    }
+    fn flush_scanout(&self) -> RutabagaResult<()> {
+        unsafe { virgl_renderer_flush_scanout() };
+        Ok(())
+    }
 }

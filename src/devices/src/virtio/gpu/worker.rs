@@ -71,10 +71,7 @@ impl Worker {
     }
 
     pub fn run(self) {
-        thread::Builder::new()
-            .name("gpu worker".into())
-            .spawn(|| self.work())
-            .unwrap();
+        self.work()
     }
 
     fn work(mut self) {
@@ -91,7 +88,7 @@ impl Worker {
         );
 
         loop {
-            let _ = self.receiver.recv().unwrap();
+            //let _ = self.receiver.recv().unwrap();
             if self.process_queue(&mut virtio_gpu, 0) {
                 debug!("signalling queue");
                 if let Err(e) = self.interrupt.try_signal_used_queue() {
