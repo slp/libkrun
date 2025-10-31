@@ -193,6 +193,13 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
+    krun_disable_implicit_console(ctx_id);
+    if (err = krun_add_serial_console_default(ctx_id, 0, 1)) {
+        errno = -err;
+        perror("Error configuring legacy serial console");
+        return -1;
+    }
+
     uint8_t mac[] = {0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee};
     if (err = krun_add_net_unixgram(ctx_id, cmdline.passt_socket_path, -1, &mac[0], COMPAT_NET_FEATURES, NET_FLAG_VFKIT)) {
         errno = -err;

@@ -749,6 +749,7 @@ pub fn build_microvm(
             None
         };
 
+        term_set_raw_mode(true);
         serial_devices.push(setup_serial_device(event_manager, input, output)?);
     }
 

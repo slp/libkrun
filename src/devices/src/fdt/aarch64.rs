@@ -196,6 +196,7 @@ fn create_chosen_node(
 ) -> Result<()> {
     let chosen_node = fdt.begin_node("chosen")?;
     fdt.property_string("bootargs", cmdline)?;
+    fdt.property_string("stdout-path", "/uart@a001000")?;
 
     if let Some(initrd_config) = initrd {
         fdt.property_u64("linux,initrd-start", initrd_config.address.raw_value())?;
@@ -324,7 +325,14 @@ fn create_serial_node<T: DeviceInfoForFDT + Clone + Debug>(
     dev_info: &T,
 ) -> Result<()> {
     let serial_reg_prop = generate_prop64(&[dev_info.addr(), dev_info.length()]);
+    #[cfg(target_os = "linux")]
     let irq = generate_prop32(&[GIC_FDT_IRQ_TYPE_SPI, dev_info.irq(), IRQ_TYPE_EDGE_RISING]);
+    #[cfg(target_os = "macos")]
+    let irq = generate_prop32(&[
+        GIC_FDT_IRQ_TYPE_SPI,
+        dev_info.irq() - 32,
+        IRQ_TYPE_EDGE_RISING,
+    ]);
 
     let node = fdt.begin_node(&format!("uart@{:x}", dev_info.addr()))?;
     fdt.property_string("compatible", "arm,pl011")?;

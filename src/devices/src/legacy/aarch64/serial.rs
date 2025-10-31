@@ -311,6 +311,8 @@ impl Serial {
             intc.lock()
                 .unwrap()
                 .set_irq(self.irq_line, Some(&self.interrupt_evt))?;
+        } else {
+            self.interrupt_evt.write(1).unwrap();
         }
         Ok(())
     }
