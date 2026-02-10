@@ -19,7 +19,6 @@ pub(crate) mod device_manager;
 /// Resource store for configured microVM resources.
 pub mod resources;
 /// Signal handling utilities.
-#[cfg(target_os = "linux")]
 pub mod signal_handler;
 /// Wrappers over structures used to configure the VMM.
 pub mod vmm_config;

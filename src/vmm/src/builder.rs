@@ -51,9 +51,7 @@ use devices::virtio::{port_io, MmioTransport, PortDescription, VirtioDevice, Vso
 use kbs_types::Tee;
 
 use crate::device_manager;
-#[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigint_handler;
-#[cfg(target_os = "linux")]
 use crate::signal_handler::register_sigwinch_handler;
 use crate::terminal::{term_restore_mode, term_set_raw_mode};
 #[cfg(feature = "blk")]
@@ -197,8 +195,7 @@ pub enum StartMicrovmError {
     // Cannot initialize a MMIO Fs Device or add ad device to the MMIO Bus.
     RegisterConsoleDevice(device_manager::mmio::Error),
     /// Cannot register SIGWINCH event file descriptor.
-    #[cfg(target_os = "linux")]
-    RegisterFsSigwinch(kvm_ioctls::Error),
+    RegisterFsSigwinch(vmm_sys_util::errno::Error),
     /// Cannot initialize a MMIO Gpu device or add a device to the MMIO Bus.
     RegisterGpuDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO Input device or add a device to the MMIO Bus.
@@ -410,7 +407,6 @@ impl Display for StartMicrovmError {
                     "Cannot initialize a MMIO Console Device or add a device to the MMIO Bus. {err_msg}"
                 )
             }
-            #[cfg(target_os = "linux")]
             RegisterFsSigwinch(ref err) => {
                 let mut err_msg = format!("{err}");
                 err_msg = err_msg.replace('\"', "");
@@ -1980,7 +1976,6 @@ fn autoconfigure_console_ports(
             forwarding_sigint = false;
             Some(port_io::input_to_raw_fd_dup(input_fd).unwrap())
         } else {
-            #[cfg(target_os = "linux")]
             {
                 forwarding_sigint = true;
                 let sigint_input = port_io::PortInputSigInt::new();
@@ -1988,11 +1983,13 @@ fn autoconfigure_console_ports(
                 register_sigint_handler(sigint_input_fd).map_err(RegisterFsSigwinch)?;
                 Some(Box::new(sigint_input) as _)
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                forwarding_sigint = false;
-                Some(port_io::input_empty().unwrap())
-            }
+            /*
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            forwarding_sigint = false;
+                            Some(port_io::input_empty().unwrap())
+                        }
+            */
         };
 
         let console_output = if output_is_terminal && output_fd >= 0 {
@@ -2139,7 +2136,6 @@ fn attach_console_devices(
         .add_subscriber(console.clone())
         .map_err(RegisterEvent)?;
 
-    #[cfg(target_os = "linux")]
     register_sigwinch_handler(console.lock().unwrap().get_sigwinch_fd())
         .map_err(RegisterFsSigwinch)?;
 

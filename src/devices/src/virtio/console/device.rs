@@ -113,7 +113,11 @@ impl Console {
     }
 
     pub fn get_sigwinch_fd(&self) -> RawFd {
-        self.sigwinch_evt.as_raw_fd()
+        #[cfg(target_os = "linux")]
+        let fd = self.sigwinch_evt.as_raw_fd();
+        #[cfg(target_os = "macos")]
+        let fd = self.sigwinch_evt.get_write_fd();
+        fd
     }
 
     pub fn update_console_size(&mut self, port_id: u32, cols: u16, rows: u16) {

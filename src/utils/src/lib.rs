@@ -19,7 +19,6 @@ pub use macos::eventfd;
 pub mod pollable_channel;
 #[cfg(target_arch = "x86_64")]
 pub mod rand;
-#[cfg(target_os = "linux")]
 pub mod signal;
 pub mod sized_vec;
 pub mod sm;

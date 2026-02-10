@@ -86,7 +86,7 @@ extern "C" fn sigwinch_handler(num: c_int, info: *mut siginfo_t, _unused: *mut c
 
     let val: u64 = 1;
     let console_fd = CONSOLE_SIGWINCH_FD.load(Ordering::Relaxed);
-    let _ = unsafe { libc::write(console_fd, &val as *const _ as *const c_void, 8) };
+    let err = unsafe { libc::write(console_fd, &val as *const _ as *const c_void, 8) };
 }
 
 extern "C" fn sigint_handler(num: c_int, info: *mut siginfo_t, _unused: *mut c_void) {

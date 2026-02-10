@@ -110,6 +110,7 @@ impl Console {
 
 impl Subscriber for Console {
     fn process(&mut self, event: &EpollEvent, event_manager: &mut EventManager) {
+        debug!("console: process");
         let source = event.fd();
 
         let control_rxq = self.queue_events[CONTROL_RXQ_INDEX].as_raw_fd();
