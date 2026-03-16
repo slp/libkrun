@@ -24,6 +24,7 @@
 
 #include <linux/vm_sockets.h>
 
+#include "dhcp.h"
 #include "jsmn.h"
 
 #ifdef SEV
@@ -1072,6 +1073,7 @@ int main(int argc, char **argv)
     char *krun_home;
     char *krun_term;
     char *krun_init;
+    char *krun_dhcp;
     char *krun_root;
     char *krun_root_fstype;
     char *krun_root_options;
@@ -1168,6 +1170,23 @@ int main(int argc, char **argv)
         strncpy(ifr.ifr_name, "lo", IFNAMSIZ);
         ifr.ifr_flags |= IFF_UP;
         ioctl(sockfd, SIOCSIFFLAGS, &ifr);
+
+        krun_dhcp = getenv("KRUN_DHCP");
+        if (krun_dhcp && strcmp(krun_dhcp, "1") == 0) {
+            memset(&ifr, 0, sizeof ifr);
+            strncpy(ifr.ifr_name, "eth0", IFNAMSIZ);
+            if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) == 0) {
+                /* eth0 exists, bring it up first */
+                ifr.ifr_flags |= IFF_UP;
+                ioctl(sockfd, SIOCSIFFLAGS, &ifr);
+
+                /* Configure eth0 with DHCP */
+                if (do_dhcp("eth0") != 0) {
+                    printf("Warning: DHCP configuration for eth0 failed\n");
+                }
+            }
+        }
+
         close(sockfd);
     }
 
