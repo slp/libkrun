@@ -3,6 +3,7 @@ use std::env;
 use std::io::IoSliceMut;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -36,6 +37,7 @@ use rutabaga_gfx::{
     RUTABAGA_CHANNEL_TYPE_PW, RUTABAGA_CHANNEL_TYPE_X11, RUTABAGA_MAP_ACCESS_MASK,
     RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE,
 };
+use rutabaga_gfx::{RutabagaDescriptor, RutabagaFromRawDescriptor};
 #[cfg(target_os = "macos")]
 use utils::worker_message::WorkerMessage;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
@@ -221,6 +223,7 @@ impl VirtioGpu {
         interrupt: InterruptTransport,
         fence_state: Arc<Mutex<FenceState>>,
         virgl_flags: u32,
+        render_server_fd: Option<RawFd>,
         export_table: Option<ExportTable>,
     ) -> Option<Rutabaga> {
         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
@@ -278,7 +281,7 @@ impl VirtioGpu {
 
         let fence =
             Self::create_fence_handler(mem, queue_ctl.clone(), fence_state.clone(), interrupt);
-        builder.clone().build(fence.clone(), None).ok()
+        builder.clone().build(fence.clone(), render_server_fd.map(|fd| unsafe { RutabagaDescriptor::from_raw_descriptor(fd) })).ok()
     }
 
     pub fn create_fallback_rutabaga(
@@ -305,6 +308,7 @@ impl VirtioGpu {
         queue_ctl: Arc<Mutex<VirtQueue>>,
         interrupt: InterruptTransport,
         virgl_flags: u32,
+        render_server_fd: Option<RawFd>,
         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
         export_table: Option<ExportTable>,
         displays: Box<[DisplayInfo]>,
@@ -318,6 +322,7 @@ impl VirtioGpu {
             interrupt.clone(),
             fence_state.clone(),
             virgl_flags,
+            render_server_fd,
             export_table.clone(),
         ) {
             Some(rutabaga) => rutabaga,

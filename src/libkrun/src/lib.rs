@@ -32,10 +32,10 @@ use std::io::IsTerminal;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
-#[cfg(feature = "gpu")]
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-#[cfg(feature = "gpu")]
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -75,11 +75,6 @@ use krun_input::{InputConfigBackend, InputEventProviderBackend};
 const KRUN_SUCCESS: i32 = 0;
 // Maximum number of arguments/environment variables we allow
 const MAX_ARGS: usize = 4096;
-
-#[cfg(feature = "gpu")]
-const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
-#[cfg(feature = "gpu")]
-const VIRGLRENDERER_START_RENDER_SERVER: u32 = 1 << 20;
 
 // krunfw library name for each context
 #[cfg(all(target_os = "linux", not(feature = "tee")))]
@@ -193,7 +188,6 @@ struct ContextConfig {
     shutdown_efd: Option<EventFd>,
     gpu_virgl_flags: Option<u32>,
     gpu_shm_size: Option<usize>,
-    #[cfg(feature = "gpu")]
     render_server_fd: Option<RawFd>,
     enable_snd: bool,
     console_output: Option<PathBuf>,
@@ -1557,7 +1551,7 @@ pub unsafe extern "C" fn krun_add_vsock_port2(
     KRUN_SUCCESS
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(target_os = "linux")]
 fn find_virgl_render_server() -> Option<PathBuf> {
     let libexec = PathBuf::from("/usr/libexec/virgl_render_server");
     if libexec.is_file() {
@@ -1574,8 +1568,11 @@ fn find_virgl_render_server() -> Option<PathBuf> {
     None
 }
 
+const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
+const VIRGLRENDERER_START_RENDER_SERVER: u32 = 1 << 20;
+
 fn krun_set_gpu_options_common(ctx_id: u32, virgl_flags: u32, shm_size: Option<u64>) -> i32 {
-    #[cfg(feature = "gpu")]
+    #[cfg(target_os = "linux")]
     let render_server_fd =
         if virgl_flags & VIRGLRENDERER_RENDER_SERVER != 0
             && virgl_flags & VIRGLRENDERER_START_RENDER_SERVER != 0
@@ -1590,18 +1587,13 @@ fn krun_set_gpu_options_common(ctx_id: u32, virgl_flags: u32, shm_size: Option<u
 
             let mut fds = [0 as RawFd; 2];
             if unsafe {
-                libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
+                libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::FD_CLOEXEC, 0, fds.as_mut_ptr())
             } != 0
             {
                 error!("Failed to create socketpair for virgl_render_server");
                 return -std::io::Error::last_os_error()
                     .raw_os_error()
                     .unwrap_or(libc::EINVAL);
-            }
-
-            unsafe {
-                libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
-                libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
             }
 
             let child_fd = fds[1];
@@ -1643,13 +1635,13 @@ fn krun_set_gpu_options_common(ctx_id: u32, virgl_flags: u32, shm_size: Option<u
             if let Some(shm_size) = shm_size {
                 cfg.set_gpu_shm_size(shm_size.try_into().unwrap());
             }
-            #[cfg(feature = "gpu")]
+            #[cfg(target_os = "linux")]
             if let Some(fd) = render_server_fd {
                 cfg.render_server_fd = Some(fd);
             }
         }
         Entry::Vacant(_) => {
-            #[cfg(feature = "gpu")]
+            #[cfg(target_os = "linux")]
             if let Some(fd) = render_server_fd {
                 unsafe { libc::close(fd) };
             }
@@ -3078,6 +3070,9 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     }
     if let Some(shm_size) = ctx_cfg.gpu_shm_size {
         ctx_cfg.vmr.set_gpu_shm_size(shm_size);
+    }
+    if let Some(render_server_fd) = ctx_cfg.render_server_fd {
+        ctx_cfg.vmr.set_gpu_render_server_fd(render_server_fd);
     }
 
     #[cfg(feature = "snd")]
