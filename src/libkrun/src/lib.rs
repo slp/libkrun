@@ -32,7 +32,11 @@ use std::io::IsTerminal;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
+#[cfg(feature = "gpu")]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+#[cfg(feature = "gpu")]
+use std::process::Command;
 use std::slice;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::LazyLock;
@@ -71,6 +75,11 @@ use krun_input::{InputConfigBackend, InputEventProviderBackend};
 const KRUN_SUCCESS: i32 = 0;
 // Maximum number of arguments/environment variables we allow
 const MAX_ARGS: usize = 4096;
+
+#[cfg(feature = "gpu")]
+const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
+#[cfg(feature = "gpu")]
+const VIRGLRENDERER_START_RENDER_SERVER: u32 = 1 << 20;
 
 // krunfw library name for each context
 #[cfg(all(target_os = "linux", not(feature = "tee")))]
@@ -184,6 +193,8 @@ struct ContextConfig {
     shutdown_efd: Option<EventFd>,
     gpu_virgl_flags: Option<u32>,
     gpu_shm_size: Option<usize>,
+    #[cfg(feature = "gpu")]
+    render_server_fd: Option<RawFd>,
     enable_snd: bool,
     console_output: Option<PathBuf>,
     vmm_uid: Option<libc::uid_t>,
@@ -1546,18 +1557,113 @@ pub unsafe extern "C" fn krun_add_vsock_port2(
     KRUN_SUCCESS
 }
 
-#[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-pub unsafe extern "C" fn krun_set_gpu_options(ctx_id: u32, virgl_flags: u32) -> i32 {
+#[cfg(feature = "gpu")]
+fn find_virgl_render_server() -> Option<PathBuf> {
+    let libexec = PathBuf::from("/usr/libexec/virgl_render_server");
+    if libexec.is_file() {
+        return Some(libexec);
+    }
+
+    let path_var = env::var("PATH").ok()?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join("virgl_render_server");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn krun_set_gpu_options_common(ctx_id: u32, virgl_flags: u32, shm_size: Option<u64>) -> i32 {
+    #[cfg(feature = "gpu")]
+    let render_server_fd =
+        if virgl_flags & VIRGLRENDERER_RENDER_SERVER != 0
+            && virgl_flags & VIRGLRENDERER_START_RENDER_SERVER != 0
+        {
+            let server_path = match find_virgl_render_server() {
+                Some(path) => path,
+                None => {
+                    error!("virgl_render_server binary not found in PATH");
+                    return -libc::ENOENT;
+                }
+            };
+
+            let mut fds = [0 as RawFd; 2];
+            if unsafe {
+                libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
+            } != 0
+            {
+                error!("Failed to create socketpair for virgl_render_server");
+                return -std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EINVAL);
+            }
+
+            unsafe {
+                libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+
+            let child_fd = fds[1];
+            let result = unsafe {
+                Command::new(&server_path)
+                    .arg("--socket-fd")
+                    .arg(child_fd.to_string())
+                    .pre_exec(move || {
+                        let flags = libc::fcntl(child_fd, libc::F_GETFD);
+                        if flags == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        if libc::fcntl(child_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    })
+                    .spawn()
+            };
+
+            unsafe { libc::close(child_fd) };
+
+            match result {
+                Ok(_child) => Some(fds[0]),
+                Err(e) => {
+                    error!("Failed to start virgl_render_server: {e}");
+                    unsafe { libc::close(fds[0]) };
+                    return -libc::EINVAL;
+                }
+            }
+        } else {
+            None
+        };
+
     match CTX_MAP.lock().unwrap().entry(ctx_id) {
         Entry::Occupied(mut ctx_cfg) => {
             let cfg = ctx_cfg.get_mut();
             cfg.set_gpu_virgl_flags(virgl_flags);
+            if let Some(shm_size) = shm_size {
+                cfg.set_gpu_shm_size(shm_size.try_into().unwrap());
+            }
+            #[cfg(feature = "gpu")]
+            if let Some(fd) = render_server_fd {
+                cfg.render_server_fd = Some(fd);
+            }
         }
-        Entry::Vacant(_) => return -libc::ENOENT,
+        Entry::Vacant(_) => {
+            #[cfg(feature = "gpu")]
+            if let Some(fd) = render_server_fd {
+                unsafe { libc::close(fd) };
+            }
+            return -libc::ENOENT;
+        }
     }
 
     KRUN_SUCCESS
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[no_mangle]
+pub unsafe extern "C" fn krun_set_gpu_options(ctx_id: u32, virgl_flags: u32) -> i32 {
+    krun_set_gpu_options_common(ctx_id, virgl_flags, None)
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -1567,16 +1673,7 @@ pub unsafe extern "C" fn krun_set_gpu_options2(
     virgl_flags: u32,
     shm_size: u64,
 ) -> i32 {
-    match CTX_MAP.lock().unwrap().entry(ctx_id) {
-        Entry::Occupied(mut ctx_cfg) => {
-            let cfg = ctx_cfg.get_mut();
-            cfg.set_gpu_virgl_flags(virgl_flags);
-            cfg.set_gpu_shm_size(shm_size.try_into().unwrap());
-        }
-        Entry::Vacant(_) => return -libc::ENOENT,
-    }
-
-    KRUN_SUCCESS
+    krun_set_gpu_options_common(ctx_id, virgl_flags, Some(shm_size))
 }
 
 #[cfg(not(feature = "gpu"))]
