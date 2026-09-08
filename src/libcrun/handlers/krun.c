@@ -48,6 +48,10 @@
 #ifndef NET_FLAG_DHCP_CLIENT
 #  define NET_FLAG_DHCP_CLIENT (1 << 1)
 #endif
+/* This definition is only available on libkrun >= 1.19.5 */
+#ifndef VIRGLRENDERER_START_RENDER_SERVER
+#  define VIRGLRENDERER_START_RENDER_SERVER (1 << 20)
+#endif
 
 /* libkrun has a hard-limit of 16 vCPUs per microVM. */
 #define LIBKRUN_MAX_VCPUS 16
@@ -96,6 +100,7 @@ struct krun_config
   json_object *config_doc;
   json_object *config_tree;
   bool use_passt;
+  int gpu_render_server_fd;
 };
 
 /* libkrun handler.  */
@@ -161,19 +166,6 @@ libkrun_configure_kernel (uint32_t ctx_id, void *handle, json_object *config_tre
     return crun_make_error (err, -ret, "could not configure a krun external kernel");
 
   return 0;
-}
-
-static int
-libkrun_enable_virtio_gpu (struct krun_config *kconf, uint32_t virgl_flags)
-{
-  int32_t (*krun_set_gpu_options) (uint32_t ctx_id, uint32_t virgl_flags);
-  krun_set_gpu_options = dlsym (kconf->handle, "krun_set_gpu_options");
-
-  // ignore if dlsym fails
-  if (krun_set_gpu_options == NULL)
-    return 0;
-
-  return krun_set_gpu_options (kconf->ctx_id, virgl_flags);
 }
 
 static int
@@ -256,7 +248,7 @@ libkrun_configure_vm (uint32_t ctx_id, void *handle, struct krun_config *kconf, 
   runtime_spec_schema_config_schema *def = container->container_def;
   int32_t (*krun_set_vm_config) (uint32_t ctx_id, uint8_t num_vcpus, uint32_t ram_mib);
   int32_t (*krun_add_net_unixstream) (uint32_t ctx_id, const char *c_path, int fd, uint8_t *const c_mac, uint32_t features, uint32_t flags);
-  int cpus, ram_mib, gpu_flags, nested_virt, ret;
+  int cpus, ram_mib, nested_virt, ret;
   cpu_set_t set;
 
   cpus = libkrun_parse_resource_configuration (kconf->config_tree, container, "krun.cpus", "cpus");
@@ -287,21 +279,6 @@ libkrun_configure_vm (uint32_t ctx_id, void *handle, struct krun_config *kconf, 
   ret = krun_set_vm_config (ctx_id, cpus, ram_mib);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, -ret, "could not set krun vm configuration");
-
-  gpu_flags = libkrun_parse_resource_configuration (kconf->config_tree, container, "krun.gpu_flags", "gpu_flags");
-  if (gpu_flags > 0)
-    {
-      if (access ("/dev/dri", F_OK) != 0)
-        return crun_make_error (err, errno, "gpu requested but /dev/dri is not available");
-
-      if ((gpu_flags & VIRGLRENDERER_RENDER_SERVER) != 0
-          && access ("/usr/libexec/virgl_render_server", F_OK) != 0)
-        return crun_make_error (err, errno, "gpu requested but virgl_render_server is not available");
-
-      ret = libkrun_enable_virtio_gpu (kconf, gpu_flags);
-      if (UNLIKELY (ret < 0))
-        return crun_make_error (err, -ret, "could not enable virtio gpu");
-    }
 
   nested_virt = libkrun_parse_resource_configuration (kconf->config_tree, container, "krun.nested_virt", "nested_virt");
   if (nested_virt > 0)
@@ -564,6 +541,52 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
 }
 
 static int
+libkrun_enable_virtio_gpu (struct krun_config *kconf, libcrun_container_t *container, libcrun_error_t *err)
+{
+  int32_t (*krun_set_gpu_options) (uint32_t ctx_id, uint32_t virgl_flags);
+  int32_t (*krun_get_gpu_render_server_fd) (uint32_t ctx_id);
+  int gpu_flags, ret;
+
+  gpu_flags = libkrun_parse_resource_configuration (kconf->config_tree, container, "krun.gpu_flags", "gpu_flags");
+  if (gpu_flags > 0)
+    {
+      krun_set_gpu_options = dlsym (kconf->handle, "krun_set_gpu_options");
+      if (krun_set_gpu_options == NULL)
+        return crun_make_error (err, errno, "gpu requested but the version of libkrun in this system does not support it");
+
+      if (access ("/dev/dri", F_OK) != 0)
+        return crun_make_error (err, errno, "gpu requested but /dev/dri is not available");
+
+      if ((gpu_flags & VIRGLRENDERER_RENDER_SERVER) != 0)
+        {
+          if (access ("/usr/libexec/virgl_render_server", F_OK) != 0)
+            return crun_make_error (err, errno, "gpu with render server requested but virgl_render_server is not available");
+
+          krun_get_gpu_render_server_fd = dlsym (kconf->handle, "krun_get_gpu_render_server_fd");
+          if (krun_get_gpu_render_server_fd == NULL)
+            return crun_make_error (err, errno, "gpu with render server requested but the version of libkrun in this system does not support it");
+
+          gpu_flags |= VIRGLRENDERER_START_RENDER_SERVER;
+        }
+
+      ret = krun_set_gpu_options (kconf->ctx_id, gpu_flags);
+      if (UNLIKELY (ret < 0))
+        return crun_make_error (err, -ret, "gpu requested but could not configure virtio gpu device");
+
+      if ((gpu_flags & VIRGLRENDERER_RENDER_SERVER) != 0)
+        {
+          ret = krun_get_gpu_render_server_fd (kconf->ctx_id);
+          if (UNLIKELY (ret < 0))
+            return crun_make_error (err, -ret, "gpu requested with render server but could not grab its file descriptor");
+
+          kconf->gpu_render_server_fd = ret;
+        }
+    }
+
+  return 0;
+}
+
+static int
 libkrun_start_passt (void *cookie, libcrun_container_t *container)
 {
   struct krun_config *kconf = (struct krun_config *) cookie;
@@ -717,6 +740,10 @@ libkrun_configure_container (void *cookie, enum handler_configure_phase phase,
   if (phase != HANDLER_CONFIGURE_AFTER_MOUNTS)
     return 0;
 
+  ret = libkrun_enable_virtio_gpu (kconf, container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
   ret = libkrun_start_passt (cookie, container);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "start passt");
@@ -787,6 +814,8 @@ libkrun_load (void **cookie, libcrun_error_t *err)
   if (kconf == NULL)
     return crun_make_error (err, 0, "could not allocate memory for krun_config");
   memset (kconf, 0, sizeof (struct krun_config));
+
+  kconf->gpu_render_server_fd = -1;
 
   kconf->handle = dlopen (libkrun_so, RTLD_NOW);
   kconf->handle_sev = dlopen (libkrun_sev_so, RTLD_NOW);
@@ -976,25 +1005,38 @@ libkrun_close_fds (void *cookie, libcrun_container_t *container, int preserve_fd
 {
   struct krun_config *kconf = (struct krun_config *) cookie;
   int first_fd_to_close = preserve_fds + 3;
-  int passt_fd;
+  int low_fd, high_fd;
   int i;
 
+  low_fd = high_fd = -1;
+
   if (kconf->use_passt)
+    high_fd = kconf->passt_fds[PASST_FD_PARENT];
+
+  if (kconf->gpu_render_server_fd != -1)
     {
-      passt_fd = kconf->passt_fds[PASST_FD_PARENT];
-
-      if (first_fd_to_close <= passt_fd)
+      if (kconf->gpu_render_server_fd > high_fd)
         {
-          for (i = first_fd_to_close; i < passt_fd; i++)
-            {
-              // If we're closing proc_fd, make sure to invalidate it.
-              if (i == container->proc_fd)
-                container->proc_fd = -1;
-              close (i);
-            }
-
-          first_fd_to_close = passt_fd + 1;
+          low_fd = high_fd;
+          high_fd = kconf->gpu_render_server_fd;
         }
+      else
+        low_fd = kconf->gpu_render_server_fd;
+    }
+
+  if (first_fd_to_close <= high_fd)
+    {
+      for (i = first_fd_to_close; i < high_fd; i++)
+        {
+          // If we're closing proc_fd, make sure to invalidate it.
+          if (i == container->proc_fd)
+            container->proc_fd = -1;
+          else if (i == low_fd)
+            continue;
+          close (i);
+        }
+
+      first_fd_to_close = high_fd + 1;
     }
 
   return mark_or_close_fds_ge_than (container, first_fd_to_close, true, err);
