@@ -25,6 +25,11 @@ mod test_vsock_guest_connect;
 use test_vsock_guest_connect::TestVsockGuestConnect;
 
 #[cfg(any(feature = "host", target_os = "linux"))]
+mod test_vsock_guest_reconnect;
+#[cfg(any(feature = "host", target_os = "linux"))]
+use test_vsock_guest_reconnect::TestVsockGuestReconnect;
+
+#[cfg(any(feature = "host", target_os = "linux"))]
 mod test_vsock_host_connect_refused;
 #[cfg(any(feature = "host", target_os = "linux"))]
 use test_vsock_host_connect_refused::TestVsockHostConnectRefused;
@@ -119,6 +124,8 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("acpi-smp-4cpu", Box::new(TestAcpiSmp { num_cpus: 4 })),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new("vsock-guest-connect", Box::new(TestVsockGuestConnect)),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new("vsock-guest-reconnect", Box::new(TestVsockGuestReconnect)),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "vsock-host-connect-refused",

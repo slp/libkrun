@@ -43,6 +43,7 @@ pub struct UnixProxy {
     pub(crate) peer_port: u32,
     pub(crate) local_port: u32,
     pub(crate) control_port: u32,
+    pub(crate) peer_shutdown: u32,
     pub(crate) peer_fwd_cnt: Wrapping<u32>,
     pub(crate) peer_buf_alloc: u32,
     pub(crate) tx_cnt: Wrapping<u32>,
@@ -76,6 +77,7 @@ impl UnixProxy {
             peer_port: 0,
             local_port,
             control_port,
+            peer_shutdown: 0,
             peer_fwd_cnt: Wrapping(0),
             peer_buf_alloc: 0,
             tx_cnt: Wrapping(0),
@@ -103,6 +105,7 @@ impl UnixProxy {
             local_port,
             peer_port,
             control_port: 0,
+            peer_shutdown: 0,
             fd,
             status: ProxyStatus::ReverseInit,
             mem,
@@ -261,8 +264,26 @@ impl Proxy for UnixProxy {
         todo!();
     }
 
-    fn shutdown(&mut self, pkt: &VsockPacket) {
-        sys::do_shutdown(self, pkt)
+    fn shutdown(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
+        const SHUTDOWN_MASK: u32 = uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND;
+
+        let shutdown = pkt.flags() & SHUTDOWN_MASK;
+        if shutdown == 0 || self.peer_shutdown == SHUTDOWN_MASK {
+            return ProxyUpdate::default();
+        }
+
+        self.peer_shutdown |= shutdown;
+        sys::do_shutdown(self, pkt);
+
+        if self.peer_shutdown != SHUTDOWN_MASK {
+            return ProxyUpdate::default();
+        }
+
+        self.push_reset();
+        let mut update = self.release();
+        self.status = ProxyStatus::Closed;
+        update.signal_queue = true;
+        update
     }
 
     fn release(&mut self) -> ProxyUpdate {

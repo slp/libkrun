@@ -49,6 +49,7 @@ pub struct TsiStreamProxy {
     pub(crate) last_tx_cnt_sent: Wrapping<u32>,
     pub(crate) peer_buf_alloc: u32,
     pub(crate) peer_fwd_cnt: Wrapping<u32>,
+    pub(crate) peer_shutdown: u32,
     pub(crate) push_cnt: Wrapping<u32>,
     pub(crate) pending_accepts: u64,
     pub(crate) unixsock_path: Option<PathBuf>,
@@ -87,6 +88,7 @@ impl TsiStreamProxy {
             last_tx_cnt_sent: Wrapping(0),
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
+            peer_shutdown: 0,
             push_cnt: Wrapping(0),
             pending_accepts: 0,
             unixsock_path: None,
@@ -125,6 +127,7 @@ impl TsiStreamProxy {
             last_tx_cnt_sent: Wrapping(0),
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
+            peer_shutdown: 0,
             push_cnt: Wrapping(0),
             pending_accepts: 0,
             unixsock_path: None,
@@ -346,8 +349,26 @@ impl Proxy for TsiStreamProxy {
         push_packet(self.cid, rx, &self.rxq, &self.queue, &self.mem);
     }
 
-    fn shutdown(&mut self, pkt: &VsockPacket) {
-        sys::do_shutdown(self, pkt)
+    fn shutdown(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
+        const SHUTDOWN_MASK: u32 = uapi::VSOCK_FLAGS_SHUTDOWN_RCV | uapi::VSOCK_FLAGS_SHUTDOWN_SEND;
+
+        let shutdown = pkt.flags() & SHUTDOWN_MASK;
+        if shutdown == 0 || self.peer_shutdown == SHUTDOWN_MASK {
+            return ProxyUpdate::default();
+        }
+
+        self.peer_shutdown |= shutdown;
+        sys::do_shutdown(self, pkt);
+
+        if self.peer_shutdown != SHUTDOWN_MASK {
+            return ProxyUpdate::default();
+        }
+
+        self.push_reset();
+        let mut update = self.release();
+        self.status = ProxyStatus::Closed;
+        update.signal_queue = true;
+        update
     }
 
     fn release(&mut self) -> ProxyUpdate {
