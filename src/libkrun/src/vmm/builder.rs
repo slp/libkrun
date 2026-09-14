@@ -564,6 +564,29 @@ pub fn choose_payload(vm_resources: &VmResources) -> Result<Payload, StartMicrov
 }
 
 #[cfg(feature = "tdx")]
+fn tdx_ram_regions(
+    guest_memory: &GuestMemoryMmap,
+    firmware_range: Option<(u64, u64)>,
+) -> Vec<MeasuredRegion> {
+    guest_memory
+        .iter()
+        .filter(|region| {
+            firmware_range.is_none_or(|(firmware_start, firmware_end)| {
+                let region_start = region.start_addr().0;
+                let region_end = region_start + region.len();
+                region_end <= firmware_start || region_start >= firmware_end
+            })
+        })
+        .map(|region| MeasuredRegion {
+            guest_addr: region.start_addr().0,
+            host_addr: guest_memory.get_host_address(region.start_addr()).unwrap() as u64,
+            size: region.len() as usize,
+            attributes: 0,
+        })
+        .collect()
+}
+
+#[cfg(feature = "tdx")]
 fn measure_tdshim_regions(
     td_shim: TdShim,
     vm_resources: &super::resources::VmResources,
@@ -574,19 +597,10 @@ fn measure_tdshim_regions(
         .map_err(|e| StartMicrovmError::TdShimError(format!("{e}")))?;
 
     let high_fw = td_shim.high_firmware_range();
-    let ram_regions: Vec<(u64, u64)> = guest_memory
+    let mut regions = tdx_ram_regions(guest_memory, high_fw);
+    let ram_regions: Vec<(u64, u64)> = regions
         .iter()
-        .filter_map(|region| {
-            let start = region.start_addr().0;
-            let len = region.len();
-            if let Some((fw_start, fw_end)) = high_fw
-                && start >= fw_start
-                && start < fw_end
-            {
-                return None;
-            }
-            Some((start, len))
-        })
+        .map(|region| (region.guest_addr, region.size as u64))
         .collect();
 
     let startup_64 = vm_resources
@@ -606,21 +620,10 @@ fn measure_tdshim_regions(
         .generate_hobs(guest_memory, hob_entry_point, &ram_regions)
         .map_err(|e| StartMicrovmError::TdShimError(format!("{e}")))?;
 
-    // All RAM as one block (attributes=0, add but don't measure), plus the
+    // All RAM regions (attributes=0, add but don't measure), plus the
     // high firmware sections (BFV etc.) with their per-section attributes.
     // Low-address TDVF sections (TempMem, TD_HOB) fall inside the RAM range
     // and must not be added separately — TDX rejects duplicate TDH.MEM.PAGE.ADD.
-    let mut regions: Vec<MeasuredRegion> = guest_memory
-        .iter()
-        .filter(|r| r.start_addr().0 < arch::x86_64::layout::MMIO_MEM_START)
-        .map(|r| MeasuredRegion {
-            guest_addr: r.start_addr().0,
-            host_addr: guest_memory.get_host_address(r.start_addr()).unwrap() as u64,
-            size: r.len() as usize,
-            attributes: 0,
-        })
-        .collect();
-
     for section in &td_shim.sections {
         if section.memory_address >= arch::x86_64::layout::MMIO_MEM_START {
             regions.push(MeasuredRegion {
@@ -648,17 +651,8 @@ fn measure_qboot_regions(
         return Err(StartMicrovmError::MissingKernelConfig);
     };
 
-    // Match actual guest RAM; a fixed 2 GiB size breaks mem_size_mib != 2048.
-    let mut regions: Vec<MeasuredRegion> = guest_memory
-        .iter()
-        .filter(|r| r.start_addr().0 < arch::x86_64::layout::MMIO_MEM_START)
-        .map(|r| MeasuredRegion {
-            guest_addr: r.start_addr().0,
-            host_addr: guest_memory.get_host_address(r.start_addr()).unwrap() as u64,
-            size: r.len() as usize,
-            attributes: 0,
-        })
-        .collect();
+    let firmware_end = arch::FIRMWARE_START + qboot_size as u64;
+    let mut regions = tdx_ram_regions(guest_memory, Some((arch::FIRMWARE_START, firmware_end)));
 
     regions.push(MeasuredRegion {
         guest_addr: arch::FIRMWARE_START,
@@ -2375,6 +2369,42 @@ pub mod tests {
         )
         .unwrap();
         assert_eq!(vcpu_vec.len(), vcpu_count as usize);
+    }
+
+    #[cfg(feature = "tdx")]
+    #[test]
+    fn test_tdx_ram_regions_include_memory_above_gap() {
+        let low_memory_size = 2 << 20;
+        let high_memory_size = 1 << 20;
+        let guest_memory = GuestMemoryMmap::from_ranges(&[
+            (GuestAddress(0), low_memory_size),
+            (
+                GuestAddress(arch::FIRMWARE_START),
+                arch::x86_64::layout::FIRMWARE_SIZE as usize,
+            ),
+            (
+                GuestAddress(arch::x86_64::layout::FIRST_ADDR_PAST_32BITS),
+                high_memory_size,
+            ),
+        ])
+        .unwrap();
+
+        let regions = tdx_ram_regions(
+            &guest_memory,
+            Some((
+                arch::FIRMWARE_START,
+                arch::FIRMWARE_START + arch::x86_64::layout::FIRMWARE_SIZE,
+            )),
+        );
+
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].guest_addr, 0);
+        assert_eq!(regions[0].size, low_memory_size);
+        assert_eq!(
+            regions[1].guest_addr,
+            arch::x86_64::layout::FIRST_ADDR_PAST_32BITS
+        );
+        assert_eq!(regions[1].size, high_memory_size);
     }
 
     #[test]
