@@ -23,12 +23,8 @@ pub fn update_feature_info_entry(
         vm_spec.nested_enabled() && entry.ecx.read_bit(ecx::VMX_BITINDEX),
     );
 
-    // enable X2APIC bit
     #[cfg(feature = "tdx")]
-    if entry.index == 0x1 {
-        println!("adjusting 0x1 index feature");
-        entry.ecx &= 1 << 21;
-    }
+    entry.ecx.write_bit(ecx::X2APIC_BITINDEX, true);
 
     Ok(())
 }
@@ -238,6 +234,8 @@ mod tests {
         assert!(update_feature_info_entry(&mut entry, &vm_spec).is_ok());
 
         assert!(entry.ecx.read_bit(ecx::TSC_DEADLINE_TIMER_BITINDEX));
+        #[cfg(feature = "tdx")]
+        assert!(entry.ecx.read_bit(ecx::X2APIC_BITINDEX));
     }
 
     #[test]
