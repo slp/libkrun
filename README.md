@@ -187,7 +187,8 @@ sudo make TDX=1 install
 
 #### Limitations
 
-The TDX flavor of libkrun only supports guests with 1 vCPU and memory less than or equal to 3072mib.
+The legacy qboot firmware path only supports guests with 1 vCPU and up to 3072 MiB of memory.
+Use TD-Shim (for example, `launch-tee --td-shim PATH`) for guests with multiple vCPUs or more memory.
 
 ### macOS
 
