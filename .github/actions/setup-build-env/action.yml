@@ -39,7 +39,7 @@ runs:
     - name: Install packages (macOS)
       if: runner.os == 'macOS'
       shell: bash
-      run: brew tap libkrun/krun && brew trust libkrun/krun && brew install clang-format llvm meson ninja libepoxy
+      run: brew install clang-format llvm meson ninja libepoxy
 
     - name: Build and install virglrenderer 1.3.0 (macOS)
       if: runner.os == 'macOS'
