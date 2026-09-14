@@ -455,9 +455,6 @@ fn configure_64bit_boot(
     params.0.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
     params.0.hdr.cmdline_size = cmdline_size as u32;
 
-    if acpi_enabled {
-        params.0.hdr.version = 0x020e;
-    }
     params.0.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
     if let Some(initrd_config) = initrd {
         params.0.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;

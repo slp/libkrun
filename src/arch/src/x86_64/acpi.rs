@@ -27,6 +27,8 @@ const IO_APIC_DEFAULT_PHYS_BASE: u32 = 0xfec0_0000;
 /// With APIC/xAPIC, there are only 255 APIC IDs available, and the I/O APIC
 /// occupies one, so at most 254 CPUs can be represented in the MADT.
 const MAX_SUPPORTED_CPUS: u32 = 254;
+/// IAPC_BOOT_ARCH bit 1: 8042 present on ports 0x60/0x64 (`ACPI_FADT_8042`).
+const IAPC_BOOT_ARCH_8042: u16 = 1 << 1;
 
 /// Builds a 36-byte ACPI 2.0+ RSDP pointing at the given XSDT address.
 fn build_rsdp(xsdt_addr: u64) -> Vec<u8> {
@@ -91,12 +93,14 @@ fn build_dsdt(virtio_mmio_devices: &[(u64, u32)]) -> Vec<u8> {
 /// Builds a minimal ACPI 6.x FADT pointing at the given DSDT address.
 /// HW_REDUCED_ACPI is set: all devices are described in the DSDT via
 /// extended interrupt descriptors, so no legacy PIC or PM hardware is
-/// needed.
+/// needed. IAPC_BOOT_ARCH advertises the emulated i8042; Linux treats a
+/// clear `ACPI_FADT_8042` bit on FADT revision >= 2 as firmware-absent.
 fn build_fadt(dsdt_addr: u64) -> Vec<u8> {
-    let fadt = FADTBuilder::new(*b"LIBKRN", *b"KRUNFADT", 1)
+    let mut builder = FADTBuilder::new(*b"LIBKRN", *b"KRUNFADT", 1)
         .dsdt_64(dsdt_addr)
-        .flag(Flags::HwReducedAcpi)
-        .finalize();
+        .flag(Flags::HwReducedAcpi);
+    builder.iapc_boot_arch = IAPC_BOOT_ARCH_8042.into();
+    let fadt = builder.finalize();
     let mut bytes = Vec::new();
     fadt.to_aml_bytes(&mut bytes);
     bytes
