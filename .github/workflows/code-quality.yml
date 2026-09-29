@@ -10,6 +10,9 @@ jobs:
       
       - name: Setup build environment
         uses: ./.github/actions/setup-build-env
+
+      - name: Verify guest init Cargo.lock
+        run: cargo check -j11 --locked --manifest-path init/init-binary/Cargo.toml
       
       - name: Create a fake init
         run: touch init/init
