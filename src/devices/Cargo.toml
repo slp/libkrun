@@ -46,7 +46,7 @@ rutabaga_gfx = { version = "0.1.85", features = ["virgl_renderer"], optional = t
 imago = { version = "0.2.4", default-features = false, features = ["sync", "vm-memory"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", features = ["ioctl", "net", "poll", "socket", "fs"] }
+nix = { version = "0.30.1", features = ["ioctl", "net", "poll", "socket", "fs", "uio"] }
 vm-memory = { version = "0.18", default-features = false, features = ["backend-mmap", "rawfd"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
