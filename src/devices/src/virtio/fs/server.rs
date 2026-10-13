@@ -90,18 +90,20 @@ impl<F: FileSystem + Sync> Server<F> {
         shm_region: &Option<VirtioShmRegion>,
         exit_code: &Arc<AtomicI32>,
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
-    ) -> Result<usize> {
+    ) -> Result<(usize, bool)> {
         let in_header: InHeader = r.read_obj().map_err(Error::DecodeMessage)?;
+        let sync = in_header.flags == 1;
 
         if in_header.len > (MAX_BUFFER_SIZE + BUFFER_HEADER_SIZE) {
-            return reply_error(
+            let len = reply_error(
                 linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
                 in_header.unique,
                 w,
-            );
+            )?;
+            return Ok((len, sync));
         }
         debug!("opcode: {}", in_header.opcode);
-        match in_header.opcode {
+        let len = match in_header.opcode {
             x if x == Opcode::Lookup as u32 => self.lookup(in_header, r, w),
             x if x == Opcode::Forget as u32 => self.forget(in_header, r), // No reply.
             x if x == Opcode::Getattr as u32 => self.getattr(in_header, r, w),
@@ -184,7 +186,9 @@ impl<F: FileSystem + Sync> Server<F> {
                 in_header.unique,
                 w,
             ),
-        }
+        }?;
+
+        Ok((len, sync))
     }
 
     fn lookup(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {

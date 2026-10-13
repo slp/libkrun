@@ -46,8 +46,10 @@ mod defs {
     pub const QUEUE_SIZE: u16 = 1024;
     pub static QUEUE_CONFIG: [QueueConfig; NUM_QUEUES] = [QueueConfig::new(QUEUE_SIZE); NUM_QUEUES];
     // High priority queue.
+    #[allow(dead_code)]
     pub const HPQ_INDEX: usize = 0;
     // Request queue.
+    #[allow(dead_code)]
     pub const REQ_INDEX: usize = 1;
 
     pub mod uapi {

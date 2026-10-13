@@ -28,14 +28,14 @@ use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
 use crate::virtio::{InterruptTransport, VirtioShmRegion};
 
-enum FsServer {
+pub(super) enum FsServer {
     ReadWrite(Server<AugmentFs<PassthroughFs>>),
     ReadOnly(Server<AugmentFs<PassthroughFsRo>>),
     Null(Server<AugmentFs<NullFs>>),
 }
 
 impl FsServer {
-    fn handle_message(
+    pub(super) fn handle_message(
         &self,
         r: Reader,
         w: Writer,
@@ -43,7 +43,7 @@ impl FsServer {
         shm_region: &Option<VirtioShmRegion>,
         exit_code: &Arc<AtomicI32>,
         #[cfg(target_os = "macos")] map_sender: &Option<Sender<WorkerMessage>>,
-    ) -> super::Result<usize> {
+    ) -> super::Result<(usize, bool)> {
         match self {
             FsServer::ReadWrite(s) => s.handle_message(
                 r,
@@ -76,6 +76,7 @@ impl FsServer {
     }
 }
 
+#[allow(dead_code)]
 pub struct FsWorker {
     queues: Vec<Queue>,
     queue_evts: Vec<Arc<EventFd>>,
@@ -90,6 +91,7 @@ pub struct FsWorker {
     map_sender: Option<Sender<WorkerMessage>>,
 }
 
+#[allow(dead_code)]
 impl FsWorker {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -241,7 +243,7 @@ impl FsWorker {
                 .map_err(FsError::QueueWriter)
                 .unwrap();
 
-            let len = match self.server.handle_message(
+            let (len, _sync) = match self.server.handle_message(
                 reader,
                 writer,
                 self.allow_idmap,
@@ -250,10 +252,10 @@ impl FsWorker {
                 #[cfg(target_os = "macos")]
                 &self.map_sender,
             ) {
-                Ok(len) => len,
+                Ok((len, sync)) => (len, sync),
                 Err(e) => {
                     error!("error handling message: {e:?}");
-                    0
+                    (0, false)
                 }
             };
 

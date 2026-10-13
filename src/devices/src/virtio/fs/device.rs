@@ -14,13 +14,19 @@ use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RIN
 use vm_memory::{ByteValued, GuestMemoryMmap};
 
 use super::super::{
-    ActivateError, ActivateResult, DeviceQueue, DeviceState, FsError, QueueConfig, VirtioDevice,
-    VirtioShmRegion,
+    ActivateError, ActivateResult, DeviceQueue, DeviceState, FsError, Queue, QueueConfig,
+    VirtioDevice, VirtioShmRegion,
 };
 use super::ExportTable;
-use super::passthrough;
+use super::augment_fs::AugmentFs;
+use super::descriptor_utils::{Reader, Writer};
+use super::inode_alloc::InodeAllocator;
+use super::null_fs::NullFs;
+use super::passthrough::{self, PassthroughFs};
+use super::read_only::PassthroughFsRo;
+use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
-use super::worker::FsWorker;
+use super::worker::FsServer;
 use super::{defs, defs::uapi};
 use crate::virtio::InterruptTransport;
 use crate::virtio::passthrough::PermissionSemantics;
@@ -58,6 +64,9 @@ pub struct Fs {
     exit_code: Arc<AtomicI32>,
     #[cfg(target_os = "macos")]
     map_sender: Option<Sender<WorkerMessage>>,
+    queues: Vec<Queue>,
+    queue_evts: Vec<Arc<EventFd>>,
+    server: Option<FsServer>,
 }
 
 impl Fs {
@@ -108,6 +117,9 @@ impl Fs {
             exit_code,
             #[cfg(target_os = "macos")]
             map_sender: None,
+            queues: Vec::new(),
+            queue_evts: Vec::new(),
+            server: None,
         })
     }
 
@@ -145,6 +157,72 @@ impl Fs {
     #[cfg(target_os = "macos")]
     pub fn set_map_sender(&mut self, map_sender: Sender<WorkerMessage>) {
         self.map_sender = Some(map_sender);
+    }
+
+    fn handle_event(&mut self, queue_index: usize) {
+        debug!("Fs: queue event: {queue_index}");
+        let mem = match &self.device_state {
+            DeviceState::Activated(mem, _) => mem.clone(),
+            DeviceState::Inactive => unreachable!(),
+        };
+
+        loop {
+            self.queues[queue_index].disable_notification(&mem).unwrap();
+
+            self.process_queue(queue_index);
+
+            if !self.queues[queue_index].enable_notification(&mem).unwrap() {
+                break;
+            }
+        }
+    }
+
+    fn process_queue(&mut self, queue_index: usize) {
+        let (mem, interrupt) = match &self.device_state {
+            DeviceState::Activated(mem, interrupt) => (mem.clone(), interrupt.clone()),
+            DeviceState::Inactive => unreachable!(),
+        };
+
+        let queue = &mut self.queues[queue_index];
+        while let Some(head) = queue.pop(&mem) {
+            let reader = Reader::new(&mem, head.clone())
+                .map_err(FsError::QueueReader)
+                .unwrap();
+            let writer = Writer::new(&mem, head.clone())
+                .map_err(FsError::QueueWriter)
+                .unwrap();
+
+            let (len, sync) = match self.server.as_ref().unwrap().handle_message(
+                reader,
+                writer,
+                self.allow_idmap,
+                &self.shm_region,
+                &self.exit_code,
+                #[cfg(target_os = "macos")]
+                &self.map_sender,
+            ) {
+                Ok((len, sync)) => (len, sync),
+                Err(e) => {
+                    error!("error handling message: {e:?}");
+                    (0, false)
+                }
+            };
+
+            if let Err(e) = queue.add_used(&mem, head.index, len as u32) {
+                error!("failed to add used elements to the queue: {e:?}");
+            }
+
+            if sync {
+                warn!("XXX - sync request");
+            } else {
+                warn!("XXX - background request");
+            }
+
+            //if !sync &&  queue.needs_notification(&mem).unwrap() {
+            if !sync && queue.needs_notification(&mem).unwrap() {
+                interrupt.signal_used_queue();
+            }
+        }
     }
 }
 
@@ -213,7 +291,43 @@ impl VirtioDevice for Fs {
             queue_evts.push(dq.event);
         }
 
+        let inode_alloc = Arc::new(InodeAllocator::new());
         let virtual_entries = self.virtual_entries.clone();
+        let server = match &self.passthrough_cfg {
+            Some(cfg) if self.read_only => {
+                let inner =
+                    PassthroughFsRo::new(cfg.clone(), inode_alloc.clone()).map_err(|e| {
+                        error!("virtio_fs: failed to create passthrough fs: {e}");
+                        ActivateError::BadActivate
+                    })?;
+                FsServer::ReadOnly(Server::new(AugmentFs::new(
+                    inner,
+                    &inode_alloc,
+                    virtual_entries,
+                )))
+            }
+            Some(cfg) => {
+                let inner = PassthroughFs::new(cfg.clone(), inode_alloc.clone()).map_err(|e| {
+                    error!("virtio_fs: failed to create passthrough fs: {e}");
+                    ActivateError::BadActivate
+                })?;
+                FsServer::ReadWrite(Server::new(AugmentFs::new(
+                    inner,
+                    &inode_alloc,
+                    virtual_entries,
+                )))
+            }
+            None => FsServer::Null(Server::new(AugmentFs::new(
+                NullFs,
+                &inode_alloc,
+                virtual_entries,
+            ))),
+        };
+        self.server = Some(server);
+        self.queues = worker_queues;
+        self.queue_evts = queue_evts;
+
+        /*
         let worker = FsWorker::new(
             worker_queues,
             queue_evts,
@@ -234,6 +348,7 @@ impl VirtioDevice for Fs {
             ActivateError::BadActivate
         })?;
         self.worker_thread = Some(worker.run());
+        */
 
         self.device_state = DeviceState::Activated(mem, interrupt);
         Ok(())
@@ -255,6 +370,12 @@ impl VirtioDevice for Fs {
             }
         }
         self.device_state = DeviceState::Inactive;
+        true
+    }
+
+    fn handle_sync(&mut self, queue_idx: u32) -> bool {
+        //error!("handle sync!");
+        self.handle_event(queue_idx as usize);
         true
     }
 }
