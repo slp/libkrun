@@ -18,7 +18,6 @@ use vm_memory::GuestMemoryMmap;
 
 use super::super::{FsError, Queue};
 use super::augment_fs::AugmentFs;
-use super::defs::{HPQ_INDEX, REQ_INDEX};
 use super::descriptor_utils::{Reader, Writer};
 use super::inode_alloc::InodeAllocator;
 use super::null_fs::NullFs;
@@ -155,8 +154,8 @@ impl FsWorker {
     }
 
     fn work(mut self) {
-        let virtq_hpq_ev_fd = self.queue_evts[HPQ_INDEX].as_raw_fd();
-        let virtq_req_ev_fd = self.queue_evts[REQ_INDEX].as_raw_fd();
+        let virtq_hpq_ev_fd = self.queue_evts[0].as_raw_fd();
+        let virtq_req_ev_fd = self.queue_evts[1].as_raw_fd();
         let stop_ev_fd = self.stop_fd.as_raw_fd();
 
         let mut epoll = Epoll::new().unwrap();
@@ -186,10 +185,10 @@ impl FsWorker {
                         let event_set = event.event_set();
                         match event_set {
                             EventSet::IN if source == virtq_hpq_ev_fd => {
-                                self.handle_event(HPQ_INDEX);
+                                self.handle_event(0);
                             }
                             EventSet::IN if source == virtq_req_ev_fd => {
-                                self.handle_event(REQ_INDEX);
+                                self.handle_event(1);
                             }
                             EventSet::IN if source == stop_ev_fd => {
                                 debug!("stopping worker thread");

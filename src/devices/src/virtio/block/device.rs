@@ -38,15 +38,18 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
 };
 
-use super::worker::BlockWorker;
+use super::worker::{DiscardWriteData, RequestHeader};
 use super::{
-    super::{ActivateResult, DeviceQueue, DeviceState, QueueConfig, TYPE_BLOCK, VirtioDevice},
-    Error, NUM_QUEUES, QUEUE_CONFIG, SECTOR_SHIFT, SECTOR_SIZE,
+    super::{
+        ActivateResult, DeviceQueue, DeviceState, Queue, QueueConfig, TYPE_BLOCK, VirtioDevice,
+    },
+    Error, QUEUE_SIZE, SECTOR_SHIFT, SECTOR_SIZE,
 };
 
 use crate::virtio::{
     ActivateError, InterruptTransport,
     block::{DiskFormat, SyncMode},
+    descriptor_utils::{Reader, Writer},
 };
 
 /// Configuration options for disk caching.
@@ -251,9 +254,13 @@ pub struct Block {
     pub(crate) avail_features: u64,
     pub(crate) acked_features: u64,
     config: VirtioBlkConfig,
+    queue_configs: Vec<QueueConfig>,
 
     // Transport related fields.
     pub(crate) device_state: DeviceState,
+
+    // Queues for synchronous processing.
+    queues: Vec<Queue>,
 
     // Implementation specific fields.
     pub(crate) id: String,
@@ -274,6 +281,7 @@ impl Block {
         is_disk_read_only: bool,
         direct_io: bool,
         sync_mode: SyncMode,
+        num_queues: u32,
     ) -> io::Result<Block> {
         let disk_image = OpenOptions::new()
             .read(true)
@@ -321,11 +329,15 @@ impl Block {
         let disk_properties =
             DiskProperties::new(disk_image.clone(), disk_image_id.clone(), cache_type)?;
 
+        let num_queues = num_queues.max(1);
+        let queue_configs = vec![QueueConfig::new(QUEUE_SIZE); num_queues as usize];
+
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1)
             | (1u64 << VIRTIO_BLK_F_SEG_MAX)
             | (1u64 << VIRTIO_BLK_F_DISCARD)
             | (1u64 << VIRTIO_BLK_F_WRITE_ZEROES)
-            | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+            | (1u64 << VIRTIO_RING_F_EVENT_IDX)
+            | (1u64 << VIRTIO_BLK_F_MQ);
 
         if sync_mode != SyncMode::None {
             avail_features |= 1u64 << VIRTIO_BLK_F_FLUSH;
@@ -340,6 +352,7 @@ impl Block {
             size_max: 0,
             // QUEUE_SIZE - 2
             seg_max: 254,
+            num_queues: num_queues as u16,
             max_discard_sectors: u32::MAX,
             max_discard_seg: 1,
             discard_sector_alignment: discard_alignment as u32 / 512,
@@ -353,6 +366,7 @@ impl Block {
             id,
             partuuid,
             config,
+            queue_configs,
             disk: Some(disk_properties),
             cache_type,
             disk_image,
@@ -360,6 +374,7 @@ impl Block {
             avail_features,
             acked_features: 0u64,
             device_state: DeviceState::Inactive,
+            queues: Vec::new(),
             worker_thread: None,
             worker_stopfd: EventFd::new(EFD_NONBLOCK)?,
         })
@@ -379,6 +394,151 @@ impl Block {
     pub fn is_read_only(&self) -> bool {
         self.avail_features & (1u64 << VIRTIO_BLK_F_RO) != 0
     }
+
+    fn process_queue(&mut self, queue_index: usize) {
+        let (mem, interrupt) = match &self.device_state {
+            DeviceState::Activated(mem, interrupt) => (mem.clone(), interrupt.clone()),
+            DeviceState::Inactive => return,
+        };
+
+        let queue = &mut self.queues[queue_index];
+        let disk = self.disk.as_ref().unwrap();
+
+        while let Some(head) = queue.pop(&mem) {
+            let mut reader = match Reader::new(&mem, head.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("invalid descriptor chain: {e:?}");
+                    continue;
+                }
+            };
+            let mut writer = match Writer::new(&mem, head.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("invalid descriptor chain: {e:?}");
+                    continue;
+                }
+            };
+            let request_header: RequestHeader = match reader.read_obj() {
+                Ok(h) => h,
+                Err(e) => {
+                    error!("invalid request header: {e:?}");
+                    continue;
+                }
+            };
+
+            let (status, len): (u8, usize) =
+                match Self::process_request(disk, request_header, &mut reader, &mut writer) {
+                    Ok(l) => (VIRTIO_BLK_S_OK.try_into().unwrap(), l),
+                    Err(e) => {
+                        error!("error processing request: {e:?}");
+                        (VIRTIO_BLK_S_IOERR.try_into().unwrap(), 0)
+                    }
+                };
+
+            if let Err(e) = writer.write_obj(status) {
+                error!("Failed to write virtio block status: {e:?}")
+            }
+
+            if let Err(e) = queue.add_used(&mem, head.index, len as u32) {
+                error!("failed to add used elements to the queue: {e:?}");
+            }
+        }
+    }
+
+    fn process_request(
+        disk: &DiskProperties,
+        request_header: RequestHeader,
+        reader: &mut Reader,
+        writer: &mut Writer,
+    ) -> result::Result<usize, super::worker::RequestError> {
+        use super::worker::RequestError;
+
+        match request_header.request_type {
+            VIRTIO_BLK_T_IN => {
+                let data_len = writer.available_bytes() - 1;
+                if !data_len.is_multiple_of(512) {
+                    Err(RequestError::InvalidDataLength)
+                } else {
+                    writer
+                        .write_from_at(disk, data_len, request_header.sector * 512)
+                        .map_err(RequestError::WritingToDescriptor)
+                }
+            }
+            VIRTIO_BLK_T_OUT => {
+                let data_len = reader.available_bytes();
+                if !data_len.is_multiple_of(512) {
+                    Err(RequestError::InvalidDataLength)
+                } else {
+                    reader
+                        .read_to_at(disk, data_len, request_header.sector * 512)
+                        .map_err(RequestError::ReadingFromDescriptor)
+                }
+            }
+            VIRTIO_BLK_T_FLUSH => match disk.cache_type() {
+                CacheType::Writeback => {
+                    let diskfile = disk.file.lock().unwrap();
+                    diskfile.flush().map_err(RequestError::FlushingToDisk)?;
+                    diskfile.sync().map_err(RequestError::FlushingToDisk)?;
+                    Ok(0)
+                }
+                CacheType::Unsafe => Ok(0),
+            },
+            VIRTIO_BLK_T_GET_ID => {
+                let data_len = writer.available_bytes();
+                let disk_id = disk.image_id();
+                if data_len < disk_id.len() {
+                    Err(RequestError::InvalidDataLength)
+                } else {
+                    writer
+                        .write_all(disk_id)
+                        .map_err(RequestError::WritingToDescriptor)?;
+                    Ok(disk_id.len())
+                }
+            }
+            VIRTIO_BLK_T_DISCARD => {
+                let discard_write_data: DiscardWriteData = reader
+                    .read_obj()
+                    .map_err(RequestError::ReadingFromDescriptor)?;
+                disk.file
+                    .lock()
+                    .unwrap()
+                    .discard_to_any(
+                        discard_write_data.sector * 512,
+                        discard_write_data.num_sectors as u64 * 512,
+                    )
+                    .map_err(RequestError::Discarding)?;
+                Ok(0)
+            }
+            VIRTIO_BLK_T_WRITE_ZEROES => {
+                let discard_write_data: DiscardWriteData = reader
+                    .read_obj()
+                    .map_err(RequestError::ReadingFromDescriptor)?;
+                let unmap = (discard_write_data.flags & VIRTIO_BLK_WRITE_ZEROES_FLAG_UNMAP) != 0;
+                if unmap {
+                    disk.file
+                        .lock()
+                        .unwrap()
+                        .discard_to_zero(
+                            discard_write_data.sector * 512,
+                            discard_write_data.num_sectors as u64 * 512,
+                        )
+                        .map_err(RequestError::DiscardingToZero)?;
+                } else {
+                    disk.file
+                        .lock()
+                        .unwrap()
+                        .write_zeroes(
+                            discard_write_data.sector * 512,
+                            discard_write_data.num_sectors as u64 * 512,
+                        )
+                        .map_err(RequestError::WritingZeroes)?;
+                }
+                Ok(0)
+            }
+            _ => Err(RequestError::UnknownRequest),
+        }
+    }
 }
 
 impl VirtioDevice for Block {
@@ -391,7 +551,7 @@ impl VirtioDevice for Block {
     }
 
     fn queue_config(&self) -> &[QueueConfig] {
-        &QUEUE_CONFIG
+        &self.queue_configs
     }
 
     fn avail_features(&self) -> u64 {
@@ -434,34 +594,18 @@ impl VirtioDevice for Block {
         interrupt: InterruptTransport,
         queues: Vec<DeviceQueue>,
     ) -> ActivateResult {
-        if self.worker_thread.is_some() {
-            panic!("virtio_blk: worker thread already exists");
+        if self.disk.is_none() {
+            self.disk = Some(
+                DiskProperties::new(
+                    Arc::clone(&self.disk_image),
+                    self.disk_image_id.clone(),
+                    self.cache_type,
+                )
+                .map_err(|_| ActivateError::BadActivate)?,
+            );
         }
 
-        let [blk_q]: [_; NUM_QUEUES] = queues.try_into().map_err(|_| {
-            error!("Cannot perform activate. Expected {} queue(s)", NUM_QUEUES);
-            ActivateError::BadActivate
-        })?;
-
-        let disk = match self.disk.take() {
-            Some(d) => d,
-            None => DiskProperties::new(
-                Arc::clone(&self.disk_image),
-                self.disk_image_id.clone(),
-                self.cache_type,
-            )
-            .map_err(|_| ActivateError::BadActivate)?,
-        };
-
-        let worker = BlockWorker::new(
-            blk_q,
-            interrupt.clone(),
-            mem.clone(),
-            disk,
-            self.worker_stopfd.try_clone().unwrap(),
-        );
-        self.worker_thread = Some(worker.run());
-
+        self.queues = queues.into_iter().map(|dq| dq.queue).collect();
         self.device_state = DeviceState::Activated(mem, interrupt);
         Ok(())
     }
@@ -473,7 +617,13 @@ impl VirtioDevice for Block {
                 error!("error waiting for worker thread: {e:?}");
             }
         }
+        self.queues.clear();
         self.device_state = DeviceState::Inactive;
+        true
+    }
+
+    fn handle_sync(&mut self, queue_idx: u32) -> bool {
+        self.process_queue(queue_idx as usize);
         true
     }
 }

@@ -87,8 +87,7 @@ impl Fs {
         config.tag[..tag.len()].copy_from_slice(tag.as_slice());
         config.num_request_queues = num_request_queues;
 
-        let num_queues = 1 + num_request_queues as usize;
-        let queue_configs = vec![QueueConfig::new(defs::QUEUE_SIZE); num_queues];
+        let queue_configs = vec![QueueConfig::new(defs::QUEUE_SIZE); num_request_queues as usize];
 
         let attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
             // As uid/gid are context-dependent, attributes can't be cached.

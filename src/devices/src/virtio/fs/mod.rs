@@ -41,12 +41,6 @@ pub use self::filesystem::ExportTable;
 mod defs {
     pub const FS_DEV_ID: &str = "virtio_fs";
     pub const QUEUE_SIZE: u16 = 1024;
-    // High priority queue.
-    #[allow(dead_code)]
-    pub const HPQ_INDEX: usize = 0;
-    // Request queue.
-    #[allow(dead_code)]
-    pub const REQ_INDEX: usize = 1;
 
     pub mod uapi {
         pub const VIRTIO_ID_FS: u32 = 26;

@@ -41,9 +41,9 @@ pub enum RequestError {
 #[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct RequestHeader {
-    request_type: u32,
-    _reserved: u32,
-    sector: u64,
+    pub request_type: u32,
+    pub _reserved: u32,
+    pub sector: u64,
 }
 // Safe because RequestHeader only contains plain data.
 unsafe impl ByteValued for RequestHeader {}
@@ -51,9 +51,9 @@ unsafe impl ByteValued for RequestHeader {}
 #[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct DiscardWriteData {
-    sector: u64,
-    num_sectors: u32,
-    flags: u32,
+    pub sector: u64,
+    pub num_sectors: u32,
+    pub flags: u32,
 }
 // Safe because DiscardWriteData only contains plain data.
 unsafe impl ByteValued for DiscardWriteData {}

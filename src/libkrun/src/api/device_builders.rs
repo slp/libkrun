@@ -1315,6 +1315,7 @@ impl<'a> AttachDevice<'a> for BlockDevice {
             self.is_read_only,
             self.direct_io,
             self.sync_mode,
+            ctx.vcpu_count() as u32,
         )
         .map_err(|e| VmmError::Internal(format!("block: {e}")))?;
 
