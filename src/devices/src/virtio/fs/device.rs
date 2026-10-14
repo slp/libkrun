@@ -54,6 +54,7 @@ pub struct Fs {
     acked_features: u64,
     device_state: DeviceState,
     config: VirtioFsConfig,
+    queue_configs: Vec<QueueConfig>,
     allow_idmap: bool,
     shm_region: Option<VirtioShmRegion>,
     passthrough_cfg: Option<passthrough::Config>,
@@ -77,13 +78,17 @@ impl Fs {
         exit_code: Arc<AtomicI32>,
         read_only: bool,
         virtual_entries: Vec<VirtualDirEntry<'static>>,
+        num_request_queues: u32,
     ) -> super::Result<Fs> {
         let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
 
         let tag = fs_id.into_bytes();
         let mut config = VirtioFsConfig::default();
         config.tag[..tag.len()].copy_from_slice(tag.as_slice());
-        config.num_request_queues = 1;
+        config.num_request_queues = num_request_queues;
+
+        let num_queues = 1 + num_request_queues as usize;
+        let queue_configs = vec![QueueConfig::new(defs::QUEUE_SIZE); num_queues];
 
         let attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
             // As uid/gid are context-dependent, attributes can't be cached.
@@ -107,6 +112,7 @@ impl Fs {
             acked_features: 0,
             device_state: DeviceState::Inactive,
             config,
+            queue_configs,
             allow_idmap,
             shm_region: None,
             passthrough_cfg: fs_cfg,
@@ -148,10 +154,6 @@ impl Fs {
 
     pub fn add_virtual_entry(&mut self, entry: VirtualDirEntry<'static>) {
         self.virtual_entries.push(entry);
-    }
-
-    pub fn set_exit_code(&mut self, exit_code: Arc<AtomicI32>) {
-        self.exit_code = exit_code;
     }
 
     #[cfg(target_os = "macos")]
@@ -248,7 +250,7 @@ impl VirtioDevice for Fs {
     }
 
     fn queue_config(&self) -> &[QueueConfig] {
-        &defs::QUEUE_CONFIG
+        &self.queue_configs
     }
 
     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
