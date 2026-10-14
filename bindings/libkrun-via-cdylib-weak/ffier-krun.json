@@ -627,6 +627,30 @@
             "return_kind": "void"
           },
           "ffi_name": "krun_fs_device_set_dax_window_size"
+        },
+        {
+          "name": "set_deferred_writeback",
+          "doc": [
+            " Offer experimental guest-side deferred writeback caching.",
+            "",
+            " The guest must have exclusive ownership of the shared directory. Changes",
+            " may remain guest-local until fsync, syncfs, sync, or clean unmount, and",
+            " uncommitted changes are lost on a guest crash. This mode cannot be used",
+            " with a read-only device, NullFs, or a DAX window. Older guests retain",
+            " normal I/O."
+          ],
+          "receiver": "mut",
+          "params": [
+            {
+              "name": "enabled",
+              "param_kind": "regular",
+              "type": "bool"
+            }
+          ],
+          "ret": {
+            "return_kind": "void"
+          },
+          "ffi_name": "krun_fs_device_set_deferred_writeback"
         }
       ],
       "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"

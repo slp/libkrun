@@ -1,4 +1,5 @@
 use super::*;
+use std::env;
 use std::ffi::CString;
 use std::mem::size_of;
 use std::sync::Barrier;
@@ -56,6 +57,10 @@ impl<'a> TestDevice<'a> {
     }
 
     fn configure(&mut self, sync: bool, event_idx: bool) {
+        self.configure_features(sync, event_idx, false);
+    }
+
+    fn configure_features(&mut self, sync: bool, event_idx: bool, deferred: bool) {
         self.queues = (0..self.transport.lock().unwrap().queue_evts().len())
             .map(|index| VirtQueue::new(GuestAddress(index as u64 * 0x1000), self.mem, 16))
             .collect();
@@ -63,6 +68,9 @@ impl<'a> TestDevice<'a> {
         self.write_register(0x70, device_status::ACKNOWLEDGE);
         self.write_register(0x70, device_status::ACKNOWLEDGE | device_status::DRIVER);
         let mut features = 0;
+        if deferred {
+            features |= 1 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK;
+        }
         if sync {
             features |= 1 << uapi::VIRTIO_FS_F_SYNC;
         }
@@ -202,6 +210,79 @@ fn new_fs(cpus: u32) -> Fs {
         cpus,
     )
     .unwrap()
+}
+
+#[test]
+fn deferred_writeback_is_opt_in_and_independent_of_sync_queues() {
+    let feature = 1u64 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK;
+    let mut fs = new_fs(0);
+    assert_eq!(fs.avail_features() & feature, 0);
+    fs.ack_features_by_page(0, feature as u32);
+    assert_eq!(fs.acked_features() & feature, 0);
+    fs.set_deferred_writeback(true);
+    assert_ne!(fs.avail_features() & feature, 0);
+    fs.ack_features_by_page(0, feature as u32);
+    assert_ne!(fs.acked_features() & feature, 0);
+    assert!(!fs.sync_enabled());
+    fs.set_deferred_writeback(false);
+    assert_eq!(fs.avail_features() & feature, 0);
+}
+
+#[test]
+fn deferred_writeback_requires_guest_acknowledgement_and_resets() {
+    let feature = 1u64 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK;
+    let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
+    let mut device = TestDevice::new(&mem, 2, false, false);
+    device.write_register(0x70, 0);
+    {
+        let mut fs = device.fs.lock().unwrap();
+        fs.set_deferred_writeback(true);
+        fs.passthrough_cfg = Some(passthrough::Config {
+            root_dir: env::temp_dir().to_str().unwrap().to_owned(),
+            ..Default::default()
+        });
+    }
+    device.configure(false, false);
+    assert_eq!(device.fs.lock().unwrap().acked_features() & feature, 0);
+    device.write_register(0x70, 0);
+    device.configure_features(true, true, true);
+    assert_ne!(device.fs.lock().unwrap().acked_features() & feature, 0);
+    let (expected, unique) = device.publish(2, Opcode::Lookup, b"missing\0", 0);
+    device.notify(2);
+    device.response(2, expected, unique);
+    device.write_register(0x70, 0);
+    assert_eq!(device.fs.lock().unwrap().acked_features(), 0);
+}
+
+#[test]
+fn deferred_writeback_rejects_dax_and_read_only_activation() {
+    for read_only in [false, true] {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
+        let mut fs = new_fs(0);
+        fs.set_deferred_writeback(true);
+        fs.passthrough_cfg = Some(passthrough::Config::default());
+        fs.set_acked_features(1 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK);
+        if read_only {
+            fs.read_only = true;
+        } else {
+            fs.set_shm_region(VirtioShmRegion {
+                host_addr: 0,
+                guest_addr: 0,
+                size: 4096,
+            });
+        }
+        let queues = (0..2)
+            .map(|_| {
+                DeviceQueue::new(
+                    Queue::new(16),
+                    Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+                )
+            })
+            .collect();
+        let interrupt = InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap();
+        assert!(fs.activate(mem, interrupt, queues).is_err());
+        assert!(!fs.is_activated());
+    }
 }
 
 struct ObservedTransport {

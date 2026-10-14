@@ -3,6 +3,10 @@
 //! follows num_request_queues in device configuration. Synchronous queue i has
 //! index 1 + num_request_queues + i and completes in the notifying vCPU thread.
 //! Hiprio and normal requests use a worker and retain interrupt completions.
+//!
+//! VIRTIO_FS_F_DEFERRED_WRITEBACK (bit 2) is separately opt-in. It grants the
+//! guest exclusive ownership and permits guest-local namespace/data mutations
+//! until an explicit mount-wide checkpoint. DAX is incompatible with it.
 
 mod augment_fs;
 mod device;
@@ -56,6 +60,7 @@ mod defs {
     pub mod uapi {
         pub const VIRTIO_ID_FS: u32 = 26;
         pub const VIRTIO_FS_F_SYNC: u32 = 1;
+        pub const VIRTIO_FS_F_DEFERRED_WRITEBACK: u32 = 2;
     }
 }
 

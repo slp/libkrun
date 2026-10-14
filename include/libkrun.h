@@ -244,6 +244,17 @@ typedef void (*krun_fs_device_set_overlay_fn)(KrunFsDevice handle, KrunFsOverlay
  */
 void krun_fs_device_set_dax_window_size(KrunFsDevice handle, uint64_t bytes);
 typedef void (*krun_fs_device_set_dax_window_size_fn)(KrunFsDevice handle, uint64_t bytes);
+/**
+ * Offer experimental guest-side deferred writeback caching.
+ *
+ * The guest must have exclusive ownership of the shared directory. Changes
+ * may remain guest-local until fsync, syncfs, sync, or clean unmount, and
+ * uncommitted changes are lost on a guest crash. This mode cannot be used
+ * with a read-only device, NullFs, or a DAX window. Older guests retain
+ * normal I/O.
+ */
+void krun_fs_device_set_deferred_writeback(KrunFsDevice handle, bool enabled);
+typedef void (*krun_fs_device_set_deferred_writeback_fn)(KrunFsDevice handle, bool enabled);
 void krun_fs_device_destroy(KrunFsDevice handle);
 typedef void (*krun_fs_device_destroy_fn)(KrunFsDevice handle);
 

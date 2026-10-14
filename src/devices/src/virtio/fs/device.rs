@@ -215,6 +215,15 @@ impl Fs {
         self.shm_region = Some(shm_region);
     }
 
+    pub fn set_deferred_writeback(&mut self, enabled: bool) {
+        let feature = 1u64 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK;
+        if enabled {
+            self.avail_features |= feature;
+        } else {
+            self.avail_features &= !feature;
+        }
+    }
+
     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
         static FS_UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -304,6 +313,18 @@ impl VirtioDevice for Fs {
         interrupt: InterruptTransport,
         queues: Vec<DeviceQueue>,
     ) -> ActivateResult {
+        let deferred_writeback =
+            self.acked_features & (1u64 << uapi::VIRTIO_FS_F_DEFERRED_WRITEBACK) != 0;
+        if deferred_writeback
+            && (self.shm_region.is_some()
+                || self.read_only
+                || !self
+                    .passthrough_cfg
+                    .as_ref()
+                    .is_some_and(|cfg| matches!(cfg.semantics, PermissionSemantics::LinuxComplete)))
+        {
+            return Err(ActivateError::BadActivate);
+        }
         if self.worker_thread.is_some() {
             panic!("virtio_fs: worker thread already exists");
         }
@@ -321,7 +342,12 @@ impl VirtioDevice for Fs {
 
         let inode_alloc = Arc::new(InodeAllocator::new());
         let virtual_entries = self.virtual_entries.clone();
-        let server = match &self.passthrough_cfg {
+        let mut passthrough_cfg = self.passthrough_cfg.clone();
+        if deferred_writeback && let Some(cfg) = passthrough_cfg.as_mut() {
+            cfg.writeback = true;
+            cfg.cache_policy = passthrough::CachePolicy::Always;
+        }
+        let server = match &passthrough_cfg {
             Some(cfg) if self.read_only => {
                 let inner =
                     PassthroughFsRo::new(cfg.clone(), inode_alloc.clone()).map_err(|e| {

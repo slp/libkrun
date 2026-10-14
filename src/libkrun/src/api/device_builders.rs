@@ -462,6 +462,7 @@ pub struct FsDevice<'a> {
     tag: String,
     host_path: Option<String>,
     read_only: bool,
+    deferred_writeback: bool,
     pub(crate) shm_size: Option<usize>,
     pub(crate) overlay: Option<FsOverlay<'a>>,
     _lifetime: PhantomData<&'a ()>,
@@ -516,6 +517,17 @@ impl<'a> FsDevice<'a> {
     pub fn set_dax_window_size(&mut self, bytes: u64) {
         self.shm_size = Some(bytes as usize);
     }
+
+    /// Offer experimental guest-side deferred writeback caching.
+    ///
+    /// The guest must have exclusive ownership of the shared directory. Changes
+    /// may remain guest-local until fsync, syncfs, sync, or clean unmount, and
+    /// uncommitted changes are lost on a guest crash. This mode cannot be used
+    /// with a read-only device, NullFs, or a DAX window. Older guests retain
+    /// normal I/O.
+    pub fn set_deferred_writeback(&mut self, enabled: bool) {
+        self.deferred_writeback = enabled;
+    }
 }
 
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
@@ -525,6 +537,7 @@ impl<'a> FsDevice<'a> {
             tag: tag.to_string(),
             host_path,
             read_only,
+            deferred_writeback: false,
             shm_size: None,
             overlay: None,
             _lifetime: PhantomData,
@@ -551,6 +564,11 @@ impl<'a> AttachDevice<'a> for FsDevice<'a> {
 
     #[cfg_attr(feature = "ffi", ffier(skip))]
     fn attach(self: Box<Self>, ctx: &mut AttachContext) -> Result<(), VmmError> {
+        if self.deferred_writeback
+            && (self.read_only || self.shm_size.is_some() || self.host_path.is_none())
+        {
+            return Err(VmmError::InvalidParam());
+        }
         let mut virtual_entries = Vec::new();
         if let Some(overlay) = self.overlay {
             // FIXME: The VMM terminates the process on VM exit, so the
@@ -570,6 +588,7 @@ impl<'a> AttachDevice<'a> for FsDevice<'a> {
             ctx.vcpu_count() as u32,
         )
         .map_err(|e| VmmError::Internal(format!("fs device: {e:?}")))?;
+        fs.set_deferred_writeback(self.deferred_writeback);
 
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         if let Some(region) = ctx.resolved_shm_region() {
