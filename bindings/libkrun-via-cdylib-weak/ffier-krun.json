@@ -637,7 +637,9 @@
             " may remain guest-local until fsync, syncfs, sync, or clean unmount, and",
             " uncommitted changes are lost on a guest crash. This mode cannot be used",
             " with a read-only device, NullFs, or a DAX window. Older guests retain",
-            " normal I/O."
+            " normal I/O.",
+            " Synthetic entries from [`FsOverlay`] retain their read-only and one-shot",
+            " behavior and are not included in deferred writeback."
           ],
           "receiver": "mut",
           "params": [

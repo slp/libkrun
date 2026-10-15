@@ -50,6 +50,7 @@ const VIRTUAL_TIMEOUT: Duration = Duration::MAX;
 /// Overlay that injects virtual inodes into an inner `FileSystem`.
 pub struct AugmentFs<T> {
     inner: T,
+    deferred_writeback: bool,
     /// Maps (parent_inode, name) → child inode number. One-shot entries
     /// are removed on first lookup so the file can only be opened once.
     name_to_inode: RwLock<HashMap<(Inode, CString), Inode>>,
@@ -82,9 +83,15 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
 
         Self {
             inner,
+            deferred_writeback: false,
             name_to_inode: RwLock::new(name_to_inode),
             inodes: RwLock::new(inodes),
         }
+    }
+
+    pub fn with_deferred_writeback(mut self, enabled: bool) -> Self {
+        self.deferred_writeback = enabled;
+        self
     }
 
     fn register_entries(
@@ -175,7 +182,11 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
                     inode,
                     generation: 0,
                     attr: st,
-                    attr_flags: 0,
+                    attr_flags: if self.deferred_writeback {
+                        fuse::ATTR_SERVER_OWNED
+                    } else {
+                        0
+                    },
                     attr_timeout: timeout,
                     entry_timeout: timeout,
                 });

@@ -252,6 +252,8 @@ typedef void (*krun_fs_device_set_dax_window_size_fn)(KrunFsDevice handle, uint6
  * uncommitted changes are lost on a guest crash. This mode cannot be used
  * with a read-only device, NullFs, or a DAX window. Older guests retain
  * normal I/O.
+ * Synthetic entries from [`FsOverlay`] retain their read-only and one-shot
+ * behavior and are not included in deferred writeback.
  */
 void krun_fs_device_set_deferred_writeback(KrunFsDevice handle, bool enabled);
 typedef void (*krun_fs_device_set_deferred_writeback_fn)(KrunFsDevice handle, bool enabled);

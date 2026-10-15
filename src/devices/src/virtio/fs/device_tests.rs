@@ -9,6 +9,16 @@ use std::time::Instant;
 
 use vm_memory::{Bytes, GuestAddress};
 
+#[cfg(unix)]
+use utils::tempdir::TempDir;
+
+#[cfg(unix)]
+use super::super::filesystem::FsOptions;
+#[cfg(unix)]
+use super::super::fuse::{
+    ATTR_SERVER_OWNED, EntryOut, GetattrIn, InitInCompat, InitOut, KERNEL_MINOR_VERSION,
+    KERNEL_VERSION, OpenIn, OpenOut, ReadIn, ReleaseIn,
+};
 use super::super::fuse::{ForgetIn, InHeader, Opcode, OutHeader, ROOT_ID};
 use super::super::virtual_entry::{VirtualEntry, VirtualEntryContent};
 use crate::legacy::DummyIrqChip;
@@ -113,6 +123,17 @@ impl<'a> TestDevice<'a> {
     }
 
     fn publish(&self, index: usize, opcode: Opcode, payload: &[u8], padding: u16) -> (u16, u64) {
+        self.publish_node(index, opcode, ROOT_ID, payload, padding)
+    }
+
+    fn publish_node(
+        &self,
+        index: usize,
+        opcode: Opcode,
+        nodeid: u64,
+        payload: &[u8],
+        padding: u16,
+    ) -> (u16, u64) {
         let queue = &self.queues[index];
         let avail = queue.avail.idx.get();
         let unique = ((index as u64) << 32) | (u64::from(avail) + 1);
@@ -121,7 +142,7 @@ impl<'a> TestDevice<'a> {
             len: (size_of::<InHeader>() + payload.len()) as u32,
             opcode: opcode as u32,
             unique,
-            nodeid: ROOT_ID,
+            nodeid,
             padding,
             ..Default::default()
         };
@@ -146,6 +167,12 @@ impl<'a> TestDevice<'a> {
             .store(expected, queue.avail.idx.location, Ordering::Release)
             .unwrap();
         (expected, unique)
+    }
+
+    fn request(&mut self, index: usize, opcode: Opcode, nodeid: u64, payload: &[u8]) -> OutHeader {
+        let (expected, unique) = self.publish_node(index, opcode, nodeid, payload, 0);
+        self.notify(index);
+        self.response(index, expected, unique)
     }
 
     fn notify(&mut self, index: usize) {
@@ -282,6 +309,88 @@ fn deferred_writeback_rejects_dax_and_read_only_activation() {
         let interrupt = InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap();
         assert!(fs.activate(mem, interrupt, queues).is_err());
         assert!(!fs.is_activated());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn deferred_writeback_preserves_one_shot_overlay_lifecycle() {
+    for negotiated in [false, true] {
+        let root = TempDir::new().unwrap();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x20000)]).unwrap();
+        let mut device = TestDevice::new(&mem, 2, true, false);
+        device.write_register(0x70, 0);
+        {
+            let mut fs = device.fs.lock().unwrap();
+            fs.set_deferred_writeback(true);
+            fs.passthrough_cfg = Some(passthrough::Config {
+                root_dir: root.as_path().to_str().unwrap().to_owned(),
+                ..Default::default()
+            });
+            fs.add_virtual_entry(VirtualDirEntry {
+                name: CString::new("init.krun").unwrap(),
+                entry: VirtualEntry {
+                    mode: 0o755,
+                    one_shot: true,
+                    content: VirtualEntryContent::File {
+                        data: b"boot-image",
+                    },
+                },
+            });
+        }
+        device.configure_features(true, false, negotiated);
+        let body = GuestAddress(0x12400 + size_of::<OutHeader>() as u64);
+        let init = InitInCompat {
+            major: KERNEL_VERSION,
+            minor: KERNEL_MINOR_VERSION,
+            flags: FsOptions::WRITEBACK_CACHE.bits() as u32,
+            ..Default::default()
+        };
+        let reply = device.request(2, Opcode::Init, ROOT_ID, init.as_slice());
+        assert_eq!(reply.error, 0);
+        let init: InitOut = mem.read_obj(body).unwrap();
+        assert_eq!(
+            init.flags & FsOptions::WRITEBACK_CACHE.bits() as u32 != 0,
+            negotiated
+        );
+        let reply = device.request(2, Opcode::Lookup, ROOT_ID, b"init.krun\0");
+        assert_eq!(reply.error, 0);
+        let entry: EntryOut = mem.read_obj(body).unwrap();
+        assert_eq!(entry.entry_valid, 0);
+        assert_eq!(entry.attr_valid, 0);
+        assert_eq!(entry.attr.flags & ATTR_SERVER_OWNED != 0, negotiated);
+        let open = OpenIn::default();
+        let reply = device.request(2, Opcode::Open, entry.nodeid, open.as_slice());
+        assert_eq!(reply.error, 0);
+        let handle: OpenOut = mem.read_obj(body).unwrap();
+        let reply = device.request(2, Opcode::Lookup, ROOT_ID, b"init.krun\0");
+        assert_eq!(reply.error, -libc::ENOENT);
+        let mut buffer = [0; 10];
+        for offset in [0, 5] {
+            let read = ReadIn {
+                fh: handle.fh,
+                offset,
+                size: 5,
+                ..Default::default()
+            };
+            let reply = device.request(2, Opcode::Read, entry.nodeid, read.as_slice());
+            assert_eq!(reply.error, 0);
+            assert_eq!(reply.len as usize, size_of::<OutHeader>() + 5);
+            mem.read_slice(&mut buffer[offset as usize..offset as usize + 5], body)
+                .unwrap();
+        }
+        assert_eq!(&buffer, b"boot-image");
+        let release = ReleaseIn {
+            fh: handle.fh,
+            ..Default::default()
+        };
+        let reply = device.request(2, Opcode::Release, entry.nodeid, release.as_slice());
+        assert_eq!(reply.error, 0);
+        let reply = device.request(2, Opcode::Lookup, ROOT_ID, b"init.krun\0");
+        assert_eq!(reply.error, -libc::ENOENT);
+        let getattr = GetattrIn::default();
+        let reply = device.request(2, Opcode::Getattr, entry.nodeid, getattr.as_slice());
+        assert_eq!(reply.error, -libc::EBADF);
     }
 }
 

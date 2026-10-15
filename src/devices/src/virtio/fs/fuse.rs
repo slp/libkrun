@@ -531,6 +531,10 @@ pub const FUSE_COMPAT_22_INIT_OUT_SIZE: u32 = 24;
 /// Object is a submount root
 pub const ATTR_SUBMOUNT: u32 = 1;
 
+/// Synthetic read-only inode managed by the server, not the deferred guest cache.
+/// Only valid when VIRTIO_FS_F_DEFERRED_WRITEBACK has been negotiated.
+pub const ATTR_SERVER_OWNED: u32 = 1 << 31;
+
 /// Kill suid and sgid if executable
 pub const OPEN_KILL_SUIDGID: u32 = 1;
 

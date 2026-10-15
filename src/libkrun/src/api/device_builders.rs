@@ -525,6 +525,8 @@ impl<'a> FsDevice<'a> {
     /// uncommitted changes are lost on a guest crash. This mode cannot be used
     /// with a read-only device, NullFs, or a DAX window. Older guests retain
     /// normal I/O.
+    /// Synthetic entries from [`FsOverlay`] retain their read-only and one-shot
+    /// behavior and are not included in deferred writeback.
     pub fn set_deferred_writeback(&mut self, enabled: bool) {
         self.deferred_writeback = enabled;
     }

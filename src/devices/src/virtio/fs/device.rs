@@ -365,11 +365,10 @@ impl VirtioDevice for Fs {
                     error!("virtio_fs: failed to create passthrough fs: {e}");
                     ActivateError::BadActivate
                 })?;
-                FsServer::ReadWrite(Server::new(AugmentFs::new(
-                    inner,
-                    &inode_alloc,
-                    virtual_entries,
-                )))
+                FsServer::ReadWrite(Server::new(
+                    AugmentFs::new(inner, &inode_alloc, virtual_entries)
+                        .with_deferred_writeback(deferred_writeback),
+                ))
             }
             None => FsServer::Null(Server::new(AugmentFs::new(
                 NullFs,

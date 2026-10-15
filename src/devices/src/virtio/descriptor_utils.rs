@@ -156,9 +156,9 @@ impl<'a> DescriptorChainConsumer<'a> {
                 // There must be at least one element in `other` because we checked
                 // its `size` value in the call to `position` above.
                 let front = other.pop_front().expect("empty VecDeque after split");
-                self.buffers
-                    .push_back(front.offset(rem).map_err(Error::VolatileMemoryError)?);
-                other.push_front(front.offset(rem).map_err(Error::VolatileMemoryError)?);
+                let (head, tail) = front.split_at(rem).map_err(Error::VolatileMemoryError)?;
+                self.buffers.push_back(head);
+                other.push_front(tail);
             }
 
             Ok(DescriptorChainConsumer {
@@ -845,6 +845,31 @@ mod tests {
         let other = reader.split_at(24).expect("failed to split Reader");
         assert_eq!(reader.available_bytes(), 24);
         assert_eq!(other.available_bytes(), 104);
+    }
+
+    #[test]
+    fn writer_split_keeps_header_separate_from_data() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
+        let start = GuestAddress(0x100);
+        let chain = create_descriptor_chain(
+            &memory,
+            GuestAddress(0),
+            start,
+            vec![(DescriptorType::Writable, 32)],
+            0,
+        )
+        .unwrap();
+        let mut header = Writer::new(&memory, chain).unwrap();
+        let mut data = header.split_at(8).unwrap();
+        assert_eq!(header.available_bytes(), 8);
+        assert_eq!(data.available_bytes(), 24);
+        data.write_all(&[0x22; 24]).unwrap();
+        header.write_all(&[0x11; 8]).unwrap();
+        assert!(header.write_all(&[0]).is_err());
+        let mut buffer = [0; 32];
+        memory.read_slice(&mut buffer, start).unwrap();
+        assert_eq!(&buffer[..8], &[0x11; 8]);
+        assert_eq!(&buffer[8..], &[0x22; 24]);
     }
 
     #[test]
