@@ -477,7 +477,7 @@ int main(int argc, char *const argv[])
 
     // Add built-in vsock with TSI when not using vhost-user-vsock
     if (cmdline.vhost_user_vsock_socket == NULL) {
-        CHECK(KrunVsockDevice vsock = krun_vsock_device_new(3, KRUN_TSI_FLAGS_HIJACK_INET | KRUN_TSI_FLAGS_HIJACK_UNIX, &krun_err));
+        CHECK(KrunVsockDevice vsock = krun_vsock_device_new(3, KRUN_TSI_FLAGS_HIJACK_INET, &krun_err));
 
         // Map port 18000 in the host to 8000 in the guest (if networking uses TSI)
         if (cmdline.net_mode == NET_MODE_TSI) {
@@ -518,9 +518,15 @@ int main(int argc, char *const argv[])
         krun_mmio_device_manager_add(devices, balloon);
     }
 
+    {
+        CHECK(KrunBlockDevice blk = krun_block_device_new(KRUN_STR("data"),
+            KRUN_STR("data.raw"), KRUN_DISK_FORMAT_RAW, &krun_err));
+        krun_mmio_device_manager_add(devices, blk);
+    }
+
     // Build the VM.
     KrunVmmBuilder builder = krun_vmm_builder_new();
-    CHECK(krun_vmm_builder_vcpus(&builder, 1, &krun_err));
+    CHECK(krun_vmm_builder_vcpus(&builder, 4, &krun_err));
     CHECK(krun_vmm_builder_ram_mib(&builder, 4096, &krun_err));
     krun_vmm_builder_payload(&builder, payload);
     krun_vmm_builder_devices(&builder, devices);
