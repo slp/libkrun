@@ -2,6 +2,7 @@
 // Uses NTFS file index + volume serial for inode identity and
 // Alternate Data Streams (ADS) for extended-attribute emulation.
 
+pub use super::super::PermissionSemantics;
 use super::super::inode_alloc::InodeAllocator;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, OsString};
@@ -188,22 +189,6 @@ impl FromStr for CachePolicy {
             _ => Err("invalid cache policy"),
         }
     }
-}
-
-/// The permission semantics to be emulated by this file system personality.
-#[derive(Debug, Default, Clone, Copy)]
-pub enum PermissionSemantics {
-    /// Be as close as possible to the common semantics of Linux file systems.
-    #[default]
-    LinuxComplete,
-
-    /// As `LinuxComplete`, with the following simplifications:
-    ///  - Extended attributes are not supported.
-    ///  - Idmaps are not supported.
-    ///  - Ownership bits are ignored, always returning the uid/gid from the process
-    ///    requesting the operation within the guest (obtained from `Context`).
-    ///  - Permissions bits are stored in the host, not as extended attributes.
-    LinuxSimplified,
 }
 
 /// Options that configure the behavior of the file system.

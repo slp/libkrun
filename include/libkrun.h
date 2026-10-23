@@ -161,6 +161,11 @@ typedef void (*krun_free_object_array_fn)(KrunObjectArray a);
 #define KRUN_LOG_STYLE_ALWAYS 1
 #define KRUN_LOG_STYLE_NEVER 2
 
+/* PermissionSemantics ----------------------------------------------- */
+
+#define KRUN_PERMISSION_SEMANTICS_LINUX_COMPLETE 0
+#define KRUN_PERMISSION_SEMANTICS_LINUX_SIMPLIFIED 1
+
 /* LogOptions -------------------------------------------------------- */
 
 #define KRUN_LOG_OPTIONS_NO_ENV 1
@@ -250,6 +255,17 @@ typedef void (*krun_fs_device_set_overlay_fn)(KrunFsDevice handle, KrunFsOverlay
  */
 void krun_fs_device_set_dax_window_size(KrunFsDevice handle, uint64_t bytes);
 typedef void (*krun_fs_device_set_dax_window_size_fn)(KrunFsDevice handle, uint64_t bytes);
+/**
+ * Select the permission semantics before attaching this device.
+ *
+ * Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps
+ * and disables attribute caching because ownership depends on the requester.
+ * Selecting `LinuxSimplified` on a Linux host returns `InvalidParam` without changing
+ * the device configuration.
+ * A NullFs device has no host permission semantics and returns `InvalidParam`.
+ */
+KrunResult krun_fs_device_set_permission_semantics(KrunFsDevice handle, uint32_t semantics, KrunError* err_out);
+typedef KrunResult (*krun_fs_device_set_permission_semantics_fn)(KrunFsDevice handle, uint32_t semantics, KrunError* err_out);
 void krun_fs_device_destroy(KrunFsDevice handle);
 typedef void (*krun_fs_device_destroy_fn)(KrunFsDevice handle);
 

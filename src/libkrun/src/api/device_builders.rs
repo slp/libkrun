@@ -35,9 +35,9 @@ use devices::virtio::balloon::FreePageReportingMode;
 #[cfg(feature = "blk")]
 use devices::virtio::block::{DiskFormat, SyncMode};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use devices::virtio::fs::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
+pub use devices::virtio::fs::PermissionSemantics;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use devices::virtio::passthrough::PermissionSemantics;
+use devices::virtio::fs::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
 use devices::virtio::{PortDescription, VirtioDevice, VirtioShmRegion, VmmExitObserver, port_io};
 #[cfg(feature = "input")]
 use krun_input;
@@ -658,6 +658,28 @@ impl<'a> FsDevice<'a> {
     /// no DAX window is allocated.
     pub fn set_dax_window_size(&mut self, bytes: u64) {
         self.shm_size = Some(bytes as usize);
+    }
+
+    /// Select the permission semantics before attaching this device.
+    ///
+    /// Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps
+    /// and disables attribute caching because ownership depends on the requester.
+    /// Selecting `LinuxSimplified` on a Linux host returns `InvalidParam` without changing
+    /// the device configuration.
+    /// A NullFs device has no host permission semantics and returns `InvalidParam`.
+    pub fn set_permission_semantics(
+        &mut self,
+        semantics: PermissionSemantics,
+    ) -> Result<(), VmmError> {
+        if !self
+            .inner
+            .lock()
+            .unwrap()
+            .set_permission_semantics(semantics)
+        {
+            return Err(VmmError::InvalidParam());
+        }
+        Ok(())
     }
 }
 

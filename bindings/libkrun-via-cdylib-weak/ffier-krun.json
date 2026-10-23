@@ -280,6 +280,13 @@
         "a"
       ]
     },
+    "PermissionSemantics": {
+      "kind": {
+        "enum": {
+          "alias_of": "u32"
+        }
+      }
+    },
     "PushStr": {
       "kind": {
         "trait": {
@@ -659,6 +666,33 @@
             "return_kind": "void"
           },
           "ffi_name": "krun_fs_device_set_dax_window_size"
+        },
+        {
+          "name": "set_permission_semantics",
+          "doc": [
+            " Select the permission semantics before attaching this device.",
+            "",
+            " Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps",
+            " and disables attribute caching because ownership depends on the requester.",
+            " Selecting `LinuxSimplified` on a Linux host returns `InvalidParam` without changing",
+            " the device configuration.",
+            " A NullFs device has no host permission semantics and returns `InvalidParam`."
+          ],
+          "receiver": "mut",
+          "params": [
+            {
+              "name": "semantics",
+              "param_kind": "regular",
+              "type": "PermissionSemantics"
+            }
+          ],
+          "ret": {
+            "return_kind": "result",
+            "ok": null,
+            "err_type": "VmmError",
+            "c_convention": "out_param"
+          },
+          "ffi_name": "krun_fs_device_set_permission_semantics"
         }
       ],
       "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"
@@ -2803,6 +2837,22 @@
           "value": 2
         }
       ]
+    },
+    {
+      "name": "PermissionSemantics",
+      "variants": [
+        {
+          "name": "LinuxComplete",
+          "c_name": "KRUN_PERMISSION_SEMANTICS_LINUX_COMPLETE",
+          "value": 0
+        },
+        {
+          "name": "LinuxSimplified",
+          "c_name": "KRUN_PERMISSION_SEMANTICS_LINUX_SIMPLIFIED",
+          "value": 1
+        }
+      ],
+      "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"
     }
   ],
   "bitflags_constants": [

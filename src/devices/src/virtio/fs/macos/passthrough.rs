@@ -25,6 +25,7 @@ use utils::worker_message::WorkerMessage;
 use crate::virtio::fs::filesystem::SecContext;
 
 use super::super::super::linux_errno::{LINUX_ERANGE, linux_error};
+pub use super::super::PermissionSemantics;
 use super::super::bindings;
 use super::super::filesystem::{
     Context, DirEntry, Entry, ExportTable, Extensions, FileSystem, FsOptions, GetxattrReply,
@@ -526,22 +527,6 @@ impl FromStr for CachePolicy {
             _ => Err("invalid cache policy"),
         }
     }
-}
-
-/// The permission semantics to be emulated by this file system personality.
-#[derive(Debug, Default, Clone, Copy)]
-pub enum PermissionSemantics {
-    /// Be as close as possible to the common semantics of Linux file systems.
-    #[default]
-    LinuxComplete,
-
-    /// As `LinuxComplete`, with the following simplifications:
-    ///  - Extended attributes are not supported.
-    ///  - Idmaps are not supported.
-    ///  - Ownership bits are ignored, always returning the uid/gid from the process
-    ///    requesting the operation within the guest (obtained from `Context`).
-    ///  - Permissions bits are stored in the host, not as extended attributes.
-    LinuxSimplified,
 }
 
 /// Options that configure the behavior of the file system.
