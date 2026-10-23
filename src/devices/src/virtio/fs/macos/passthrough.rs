@@ -45,9 +45,9 @@ type Inode = u64;
 type Handle = u64;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
-struct InodeAltKey {
-    ino: u64,
-    dev: i32,
+pub(super) struct InodeAltKey {
+    pub(super) ino: u64,
+    pub(super) dev: i32,
 }
 
 struct InodeData {
@@ -413,7 +413,7 @@ fn stat_xattr_common(
     Ok(*st)
 }
 
-fn fstat(
+pub(super) fn fstat(
     ctx: &Context,
     semantics: PermissionSemantics,
     fd: RawFd,

@@ -3,6 +3,8 @@ pub mod passthrough;
 
 #[cfg(test)]
 mod confined;
+#[cfg(test)]
+mod restricted;
 
 #[cfg(test)]
 mod test_utils {

@@ -52,6 +52,19 @@ fn same_inode(a: &libc::stat, b: &libc::stat) -> bool {
     a.st_dev == b.st_dev && a.st_ino == b.st_ino
 }
 
+fn check_inode(st: &libc::stat) -> io::Result<()> {
+    if st.st_nlink == 0 {
+        return Err(error(libc::ESTALE));
+    }
+    if st.st_mode & libc::S_IFMT != libc::S_IFDIR && st.st_nlink > 1 {
+        return Err(error(libc::EPERM));
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG | libc::S_IFDIR | libc::S_IFLNK => Ok(()),
+        _ => Err(error(libc::EOPNOTSUPP)),
+    }
+}
+
 fn file_path(file: &File) -> io::Result<PathBuf> {
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
     check_result(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) })?;
@@ -131,6 +144,7 @@ impl Root {
             let name = CString::new(part).map_err(|_| error(libc::EINVAL))?;
             let file = open_at(dirs.last().unwrap().as_raw_fd(), &name, METADATA_FLAGS, 0)?;
             let st = stat(&file)?;
+            check_inode(&st)?;
             if st.st_dev != self.dev {
                 return Err(error(libc::EXDEV));
             }
@@ -160,9 +174,7 @@ impl Root {
 
     pub(super) fn relative_path(&self, file: &File) -> io::Result<PathBuf> {
         let st = stat(file)?;
-        if st.st_nlink == 0 {
-            return Err(error(libc::ESTALE));
-        }
+        check_inode(&st)?;
         let root_path = file_path(&self.file)?;
         let path = file_path(file)?;
         let relative = path
