@@ -681,15 +681,28 @@ impl PassthroughFs {
         })
     }
 
-    fn inode_to_handle(&self, inode: Inode, supports_fd: bool) -> io::Result<InodeHandle> {
-        debug!("inode_to_handle: inode={inode}");
-        let data = self
-            .inodes
+    fn inode_data(&self, inode: Inode) -> io::Result<Arc<InodeData>> {
+        self.inodes
             .read()
             .unwrap()
             .get(&inode)
             .cloned()
-            .ok_or_else(ebadf)?;
+            .ok_or_else(ebadf)
+    }
+
+    fn handle_data(&self, inode: Inode, handle: Handle) -> io::Result<Arc<HandleData>> {
+        self.handles
+            .read()
+            .unwrap()
+            .get(&handle)
+            .filter(|data| data.inode == inode)
+            .cloned()
+            .ok_or_else(ebadf)
+    }
+
+    fn inode_to_handle(&self, inode: Inode, supports_fd: bool) -> io::Result<InodeHandle> {
+        debug!("inode_to_handle: inode={inode}");
+        let data = self.inode_data(inode)?;
 
         let cstr =
             CString::new(format!("/.vol/{}/{}", data.dev, data.ino)).map_err(|_| einval())?;
@@ -711,14 +724,7 @@ impl PassthroughFs {
             parent,
             name.to_string_lossy()
         );
-        let data = self
-            .inodes
-            .read()
-            .unwrap()
-            .get(&parent)
-            .cloned()
-            .ok_or_else(ebadf)?;
-
+        let data = self.inode_data(parent)?;
         let cstr = CString::new(format!(
             "/.vol/{}/{}/{}",
             data.dev,
@@ -784,14 +790,7 @@ impl PassthroughFs {
             return Ok(());
         }
 
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         let mut ds = data.dirstream.lock().unwrap();
 
@@ -850,7 +849,7 @@ impl PassthroughFs {
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
-        let flags = self.parse_open_flags(flags as i32);
+        let flags = parse_open_flags(flags as i32);
 
         let file = RwLock::new(self.open_inode(inode, flags)?);
 
@@ -1124,34 +1123,34 @@ impl PassthroughFs {
         };
         self.lookup(ctx, parent, name)
     }
+}
 
-    fn parse_open_flags(&self, flags: i32) -> i32 {
-        let mut mflags: i32 = flags & 0b11;
+fn parse_open_flags(flags: i32) -> i32 {
+    let mut mflags: i32 = flags & 0b11;
 
-        if (flags & bindings::LINUX_O_NONBLOCK) != 0 {
-            mflags |= libc::O_NONBLOCK;
-        }
-        if (flags & bindings::LINUX_O_APPEND) != 0 {
-            mflags |= libc::O_APPEND;
-        }
-        if (flags & bindings::LINUX_O_CREAT) != 0 {
-            mflags |= libc::O_CREAT;
-        }
-        if (flags & bindings::LINUX_O_TRUNC) != 0 {
-            mflags |= libc::O_TRUNC;
-        }
-        if (flags & bindings::LINUX_O_EXCL) != 0 {
-            mflags |= libc::O_EXCL;
-        }
-        if (flags & bindings::LINUX_O_NOFOLLOW) != 0 {
-            mflags |= libc::O_NOFOLLOW;
-        }
-        if (flags & bindings::LINUX_O_CLOEXEC) != 0 {
-            mflags |= libc::O_CLOEXEC;
-        }
-
-        mflags
+    if (flags & bindings::LINUX_O_NONBLOCK) != 0 {
+        mflags |= libc::O_NONBLOCK;
     }
+    if (flags & bindings::LINUX_O_APPEND) != 0 {
+        mflags |= libc::O_APPEND;
+    }
+    if (flags & bindings::LINUX_O_CREAT) != 0 {
+        mflags |= libc::O_CREAT;
+    }
+    if (flags & bindings::LINUX_O_TRUNC) != 0 {
+        mflags |= libc::O_TRUNC;
+    }
+    if (flags & bindings::LINUX_O_EXCL) != 0 {
+        mflags |= libc::O_EXCL;
+    }
+    if (flags & bindings::LINUX_O_NOFOLLOW) != 0 {
+        mflags |= libc::O_NOFOLLOW;
+    }
+    if (flags & bindings::LINUX_O_CLOEXEC) != 0 {
+        mflags |= libc::O_CLOEXEC;
+    }
+
+    mflags
 }
 
 fn do_set_secctx(file: &InodeHandle, secctx: &SecContext, options: i32) -> io::Result<()> {
@@ -1410,13 +1409,7 @@ impl FileSystem for PassthroughFs {
     }
 
     fn lookup(&self, ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
-        let parent_data = self
-            .inodes
-            .read()
-            .unwrap()
-            .get(&parent)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let parent_data = self.inode_data(parent)?;
 
         let c_path = self.name_to_path(parent, name)?;
         let st = lstat(&ctx, self.cfg.semantics, &c_path, false)?;
@@ -1634,7 +1627,7 @@ impl FileSystem for PassthroughFs {
     ) -> io::Result<(Entry, Option<Handle>, OpenOptions)> {
         let c_path = self.name_to_path(parent, name)?;
 
-        let flags = self.parse_open_flags(flags as i32);
+        let flags = parse_open_flags(flags as i32);
         let (host_mode, complete) = match self.cfg.semantics {
             PermissionSemantics::LinuxComplete => {
                 let mode = if (flags & libc::O_DIRECTORY) != 0 {
@@ -1728,14 +1721,7 @@ impl FileSystem for PassthroughFs {
         _flags: u32,
     ) -> io::Result<usize> {
         debug!("read: {inode:?}");
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         // This is safe because write_from uses preadv64, so the underlying file descriptor
         // offset is not affected by this operation.
@@ -1756,14 +1742,7 @@ impl FileSystem for PassthroughFs {
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         // This is safe because read_to uses pwritev64, so the underlying file descriptor
         // offset is not affected by this operation.
@@ -2212,14 +2191,7 @@ impl FileSystem for PassthroughFs {
         handle: Handle,
         _lock_owner: u64,
     ) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         // Since this method is called whenever an fd is closed in the client, we can emulate that
         // behavior by doing the same thing (dup-ing the fd and then immediately closing it). Safe
@@ -2245,14 +2217,7 @@ impl FileSystem for PassthroughFs {
         _datasync: bool,
         handle: Handle,
     ) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         let fd = data.file.write().unwrap().as_raw_fd();
 
@@ -2572,14 +2537,7 @@ impl FileSystem for PassthroughFs {
         offset: u64,
         length: u64,
     ) -> io::Result<()> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         let fd = data.file.write().unwrap().as_raw_fd();
 
@@ -2666,14 +2624,7 @@ impl FileSystem for PassthroughFs {
         offset: u64,
         whence: u32,
     ) -> io::Result<u64> {
-        let data = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&handle)
-            .filter(|hd| hd.inode == inode)
-            .cloned()
-            .ok_or_else(ebadf)?;
+        let data = self.handle_data(inode, handle)?;
 
         // SEEK_DATA and SEEK_HOLE have slightly different semantics
         // in Linux vs. macOS, which means we can't support them.
@@ -2827,5 +2778,41 @@ impl FileSystem for PassthroughFs {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_utils::TestDir;
+    use super::*;
+
+    #[test]
+    fn handle_lookup_requires_matching_inode() {
+        let dir = TestDir::new();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: dir.0.to_str().unwrap().to_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let (handle, _) = fs
+            .opendir(
+                Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 0,
+                },
+                fuse::ROOT_ID,
+                0,
+            )
+            .unwrap();
+        let handle = handle.unwrap();
+        assert!(fs.handle_data(fuse::ROOT_ID, handle).is_ok());
+        assert!(fs.handle_data(fuse::ROOT_ID + 1, handle).is_err());
+        fs.do_release(fuse::ROOT_ID, handle).unwrap();
+        assert!(fs.handle_data(fuse::ROOT_ID, handle).is_err());
     }
 }
