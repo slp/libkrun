@@ -220,6 +220,31 @@ impl RestrictedFs {
         let mut offset = offset;
         while let Some(entry) = stream.as_ref().unwrap().get_entry(offset) {
             offset = entry.offset;
+            let name = CString::new(entry.name).map_err(|_| error(libc::EINVAL))?;
+            let file = match self.root.child(&data.file, &name) {
+                Ok(file) => file,
+                Err(err)
+                    if [
+                        libc::EPERM,
+                        libc::EACCES,
+                        libc::ENOENT,
+                        libc::ESTALE,
+                        libc::EXDEV,
+                        libc::EOPNOTSUPP,
+                    ]
+                    .into_iter()
+                    .any(|errno| error(errno).raw_os_error() == err.raw_os_error()) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let st = self.root.check(&file)?;
+            let entry = DirEntry {
+                ino: st.st_ino,
+                type_: u32::from((st.st_mode & libc::S_IFMT) >> 12),
+                ..entry
+            };
             if add(entry)? == 0 {
                 break;
             }
@@ -1035,6 +1060,23 @@ mod tests {
             fs.readdir(ctx(), fuse::ROOT_ID + 1, handle, 4096, 0, |_| Ok(1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn directory_reads_do_not_expose_rejected_inodes() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("blocked"), b"contents").unwrap();
+        fs::hard_link(dir.0.join("blocked"), dir.0.join("hardlink")).unwrap();
+        fs::write(dir.0.join("allowed"), b"contents").unwrap();
+        let fs = filesystem(&dir);
+        let handle = fs.opendir(ctx(), fuse::ROOT_ID, 0).unwrap().0.unwrap();
+        let mut names = Vec::new();
+        fs.readdir(ctx(), fuse::ROOT_ID, handle, 4096, 0, |entry| {
+            names.push(entry.name.to_vec());
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(names, [b"allowed".to_vec()]);
     }
 
     #[test]

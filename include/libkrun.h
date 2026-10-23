@@ -164,6 +164,7 @@ typedef void (*krun_free_object_array_fn)(KrunObjectArray a);
 
 #define KRUN_PERMISSION_SEMANTICS_LINUX_COMPLETE 0
 #define KRUN_PERMISSION_SEMANTICS_LINUX_SIMPLIFIED 1
+#define KRUN_PERMISSION_SEMANTICS_RESTRICTED 2
 
 /* LogOptions -------------------------------------------------------- */
 
@@ -259,6 +260,9 @@ typedef void (*krun_fs_device_set_dax_window_size_fn)(KrunFsDevice handle, uint6
  *
  * Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps
  * and disables attribute caching because ownership depends on the requester.
+ * `Restricted` confines macOS operations to the export root and cannot be combined
+ * with a DAX window. Concurrent host namespace changes require host OS isolation.
+ * Other hosts return `FeatureDisabled` for `Restricted`.
  * A NullFs device has no host permission semantics and returns `InvalidParam`.
  */
 KrunResult krun_fs_device_set_permission_semantics(KrunFsDevice handle, uint32_t semantics, KrunError* err_out);

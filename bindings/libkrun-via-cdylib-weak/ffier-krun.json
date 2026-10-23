@@ -666,6 +666,9 @@
             "",
             " Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps",
             " and disables attribute caching because ownership depends on the requester.",
+            " `Restricted` confines macOS operations to the export root and cannot be combined",
+            " with a DAX window. Concurrent host namespace changes require host OS isolation.",
+            " Other hosts return `FeatureDisabled` for `Restricted`.",
             " A NullFs device has no host permission semantics and returns `InvalidParam`."
           ],
           "receiver": "mut",
@@ -2775,6 +2778,11 @@
           "name": "LinuxSimplified",
           "c_name": "KRUN_PERMISSION_SEMANTICS_LINUX_SIMPLIFIED",
           "value": 1
+        },
+        {
+          "name": "Restricted",
+          "c_name": "KRUN_PERMISSION_SEMANTICS_RESTRICTED",
+          "value": 2
         }
       ],
       "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"

@@ -1,9 +1,7 @@
 pub mod fs_utils;
 pub mod passthrough;
 
-#[cfg(test)]
 mod confined;
-#[cfg(test)]
 mod restricted;
 
 #[cfg(test)]
