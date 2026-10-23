@@ -117,6 +117,23 @@ impl Fs {
             return false;
         };
         let complete = matches!(semantics, PermissionSemantics::LinuxComplete);
+        #[cfg(target_os = "macos")]
+        {
+            let restricted = matches!(semantics, PermissionSemantics::Restricted);
+            if restricted || matches!(cfg.semantics, PermissionSemantics::Restricted) {
+                cfg.entry_timeout = if restricted {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(5)
+                };
+                cfg.cache_policy = if restricted {
+                    passthrough::CachePolicy::Never
+                } else {
+                    Default::default()
+                };
+                cfg.writeback = false;
+            }
+        }
         cfg.semantics = semantics;
         // Simplified ownership is context-dependent, so attributes cannot be cached.
         cfg.attr_timeout = if complete {
@@ -127,6 +144,13 @@ impl Fs {
         cfg.xattr = complete;
         self.allow_idmap = complete;
         true
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn is_restricted(&self) -> bool {
+        self.passthrough_cfg
+            .as_ref()
+            .is_some_and(|cfg| matches!(cfg.semantics, PermissionSemantics::Restricted))
     }
 
     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
@@ -342,5 +366,85 @@ mod permission_tests {
         assert_eq!(cfg.attr_timeout, Duration::ZERO);
         assert!(!cfg.xattr);
         assert!(!fs.allow_idmap);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod restricted_tests {
+    use super::*;
+
+    #[test]
+    fn restricted_configuration_disables_incompatible_features() {
+        let mut fs = Fs::new(
+            "shared".to_owned(),
+            PermissionSemantics::LinuxComplete,
+            Some("/".to_owned()),
+            Arc::new(AtomicI32::new(0)),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(fs.allow_idmap);
+        assert!(fs.set_permission_semantics(PermissionSemantics::Restricted));
+        assert!(fs.is_restricted());
+        assert!(!fs.allow_idmap);
+        let cfg = fs.passthrough_cfg.as_ref().unwrap();
+        assert_eq!(cfg.attr_timeout, Duration::ZERO);
+        assert_eq!(cfg.entry_timeout, Duration::ZERO);
+        assert!(!cfg.xattr);
+        assert!(!cfg.writeback);
+        assert!(matches!(cfg.cache_policy, passthrough::CachePolicy::Never));
+    }
+
+    #[test]
+    fn null_filesystems_do_not_enable_restricted_access() {
+        let mut fs = Fs::new(
+            "null".to_owned(),
+            PermissionSemantics::LinuxComplete,
+            None,
+            Arc::new(AtomicI32::new(0)),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(!fs.set_permission_semantics(PermissionSemantics::Restricted));
+        assert!(!fs.is_restricted());
+    }
+
+    #[test]
+    fn leaving_restricted_restores_the_selected_personality() {
+        let mut fs = Fs::new(
+            "shared".to_owned(),
+            PermissionSemantics::LinuxComplete,
+            Some("/".to_owned()),
+            Arc::new(AtomicI32::new(0)),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        for semantics in [
+            PermissionSemantics::LinuxSimplified,
+            PermissionSemantics::LinuxComplete,
+        ] {
+            assert!(fs.set_permission_semantics(PermissionSemantics::Restricted));
+            assert!(fs.is_restricted());
+            assert!(fs.set_permission_semantics(semantics));
+            assert!(!fs.is_restricted());
+            let cfg = fs.passthrough_cfg.as_ref().unwrap();
+            let complete = matches!(semantics, PermissionSemantics::LinuxComplete);
+            assert_eq!(cfg.entry_timeout, Duration::from_secs(5));
+            assert!(matches!(cfg.cache_policy, passthrough::CachePolicy::Auto));
+            assert!(!cfg.writeback);
+            assert_eq!(cfg.xattr, complete);
+            assert_eq!(fs.allow_idmap, complete);
+            assert_eq!(
+                cfg.attr_timeout,
+                if complete {
+                    Duration::from_secs(5)
+                } else {
+                    Duration::ZERO
+                }
+            );
+        }
     }
 }
