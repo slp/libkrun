@@ -1,17 +1,21 @@
-use std::ffi::CStr;
+use std::collections::BTreeMap;
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use super::confined::{Root, check_result, error, read_link};
-use super::passthrough::{InodeAltKey, PermissionSemantics, fstat};
+use super::passthrough::{DirStream, InodeAltKey, PermissionSemantics, fstat, parse_open_flags};
 use crate::virtio::bindings;
-use crate::virtio::fs::filesystem::{Context, Entry, FileSystem, FsOptions};
+use crate::virtio::fs::filesystem::{
+    Context, DirEntry, Entry, FileSystem, FsOptions, OpenOptions, SetattrValid, ZeroCopyReader,
+    ZeroCopyWriter,
+};
 use crate::virtio::fs::fuse;
 use crate::virtio::fs::inode_alloc::InodeAllocator;
 use crate::virtio::fs::multikey::MultikeyBTreeMap;
@@ -22,10 +26,18 @@ struct InodeData {
     refcount: AtomicU64,
 }
 
+struct HandleData {
+    source: Arc<InodeData>,
+    file: File,
+    directory: Mutex<Option<DirStream>>,
+}
+
 pub(super) struct RestrictedFs {
     root: Root,
     inodes: RwLock<MultikeyBTreeMap<u64, InodeAltKey, Arc<InodeData>>>,
     inode_alloc: Arc<InodeAllocator>,
+    handles: RwLock<BTreeMap<u64, Arc<HandleData>>>,
+    next_handle: AtomicU64,
 }
 
 impl RestrictedFs {
@@ -34,6 +46,8 @@ impl RestrictedFs {
             root: Root::new(path)?,
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             inode_alloc,
+            handles: RwLock::new(BTreeMap::new()),
+            next_handle: AtomicU64::new(1),
         })
     }
 
@@ -83,6 +97,113 @@ impl RestrictedFs {
             entry_timeout: Duration::ZERO,
         })
     }
+
+    fn handle(&self, inode: u64, handle: u64) -> io::Result<Arc<HandleData>> {
+        let data = self
+            .handles
+            .read()
+            .unwrap()
+            .get(&handle)
+            .filter(|data| data.source.inode == inode)
+            .cloned()
+            .ok_or_else(|| error(libc::EBADF))?;
+        self.root.check(&data.source.file)?;
+        self.root.check(&data.file)?;
+        Ok(data)
+    }
+
+    fn insert_handle(&self, source: Arc<InodeData>, file: File) -> u64 {
+        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        self.handles.write().unwrap().insert(
+            handle,
+            Arc::new(HandleData {
+                source,
+                file,
+                directory: Mutex::new(None),
+            }),
+        );
+        handle
+    }
+
+    fn open_file(
+        &self,
+        inode: u64,
+        flags: i32,
+        kill_priv: bool,
+    ) -> io::Result<(Option<u64>, OpenOptions)> {
+        let source = self.inode(inode)?;
+        let file = self.root.reopen(&source.file, flags)?;
+        let directory = self.root.check(&file)?.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        if flags & libc::O_TRUNC != 0 {
+            check_result(unsafe { libc::ftruncate(file.as_raw_fd(), 0) })?;
+            if kill_priv {
+                self.clear_privileges(&file)?;
+            }
+        }
+        let handle = self.insert_handle(source, file);
+        let options = if directory {
+            OpenOptions::empty()
+        } else {
+            OpenOptions::DIRECT_IO
+        };
+        Ok((Some(handle), options))
+    }
+
+    fn clear_privileges(&self, file: &File) -> io::Result<()> {
+        let st = self.root.check(file)?;
+        let mode = st.st_mode & !(libc::S_ISUID | libc::S_ISGID);
+        if mode != st.st_mode {
+            check_result(unsafe { libc::fchmod(file.as_raw_fd(), mode) })?;
+        }
+        Ok(())
+    }
+
+    fn release_handle(&self, inode: u64, handle: u64) -> io::Result<()> {
+        let mut handles = self.handles.write().unwrap();
+        if handles
+            .get(&handle)
+            .is_none_or(|data| data.source.inode != inode)
+        {
+            return Err(error(libc::EBADF));
+        }
+        handles.remove(&handle);
+        Ok(())
+    }
+
+    fn directory_entries<F>(
+        &self,
+        inode: u64,
+        handle: u64,
+        size: u32,
+        offset: u64,
+        mut add: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(DirEntry) -> io::Result<usize>,
+    {
+        let data = self.handle(inode, handle)?;
+        if size == 0 {
+            return Ok(());
+        }
+        let mut stream = data.directory.lock().unwrap();
+        if offset == 0 || stream.is_none() {
+            let result = unsafe { libc::lseek(data.file.as_raw_fd(), 0, libc::SEEK_SET) };
+            if result < 0 {
+                return Err(error(libc::ENOTDIR));
+            }
+            let mut fresh = DirStream::new();
+            fresh.fill_from_fd(data.file.as_raw_fd())?;
+            *stream = Some(fresh);
+        }
+        let mut offset = offset;
+        while let Some(entry) = stream.as_ref().unwrap().get_entry(offset) {
+            offset = entry.offset;
+            if add(entry)? == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl FileSystem for RestrictedFs {
@@ -108,6 +229,7 @@ impl FileSystem for RestrictedFs {
     }
 
     fn destroy(&self) {
+        self.handles.write().unwrap().clear();
         self.inodes.write().unwrap().clear();
     }
 
@@ -131,9 +253,12 @@ impl FileSystem for RestrictedFs {
         &self,
         ctx: Context,
         inode: u64,
-        _handle: Option<u64>,
+        handle: Option<u64>,
     ) -> io::Result<(bindings::stat64, Duration)> {
         let data = self.inode(inode)?;
+        if let Some(handle) = handle {
+            self.handle(inode, handle)?;
+        }
         Ok((
             fstat(
                 &ctx,
@@ -166,6 +291,292 @@ impl FileSystem for RestrictedFs {
     ) -> io::Result<Entry> {
         Err(error(libc::EPERM))
     }
+
+    fn open(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        kill_priv: bool,
+        flags: u32,
+    ) -> io::Result<(Option<u64>, OpenOptions)> {
+        self.open_file(inode, parse_open_flags(flags as i32), kill_priv)
+    }
+
+    fn opendir(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        flags: u32,
+    ) -> io::Result<(Option<u64>, OpenOptions)> {
+        self.open_file(
+            inode,
+            parse_open_flags(flags as i32) | libc::O_DIRECTORY,
+            false,
+        )
+    }
+
+    fn release(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        _flags: u32,
+        handle: u64,
+        _flush: bool,
+        _flock_release: bool,
+        _lock_owner: Option<u64>,
+    ) -> io::Result<()> {
+        self.release_handle(inode, handle)
+    }
+
+    fn releasedir(&self, _ctx: Context, inode: u64, _flags: u32, handle: u64) -> io::Result<()> {
+        self.release_handle(inode, handle)
+    }
+
+    fn read<W: io::Write + ZeroCopyWriter>(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        handle: u64,
+        mut writer: W,
+        size: u32,
+        offset: u64,
+        _lock_owner: Option<u64>,
+        _flags: u32,
+    ) -> io::Result<usize> {
+        let data = self.handle(inode, handle)?;
+        writer.write_from(&data.file, size as usize, offset)
+    }
+
+    fn write<R: io::Read + ZeroCopyReader>(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        handle: u64,
+        mut reader: R,
+        size: u32,
+        offset: u64,
+        _lock_owner: Option<u64>,
+        _delayed_write: bool,
+        kill_priv: bool,
+        _flags: u32,
+    ) -> io::Result<usize> {
+        let data = self.handle(inode, handle)?;
+        if kill_priv {
+            self.clear_privileges(&data.file)?;
+        }
+        reader.read_to(&data.file, size as usize, offset)
+    }
+
+    fn setattr(
+        &self,
+        ctx: Context,
+        inode: u64,
+        attr: bindings::stat64,
+        handle: Option<u64>,
+        valid: SetattrValid,
+    ) -> io::Result<(bindings::stat64, Duration)> {
+        let data = self.inode(inode)?;
+        let opened = handle.map(|h| self.handle(inode, h)).transpose()?;
+        let st = self.root.check(&data.file)?;
+        if st.st_mode & libc::S_IFMT == libc::S_IFLNK
+            && valid.intersects(SetattrValid::MODE | SetattrValid::SIZE)
+        {
+            return Err(error(libc::EOPNOTSUPP));
+        }
+        if valid.contains(SetattrValid::MODE) {
+            check_result(unsafe { libc::fchmod(data.file.as_raw_fd(), attr.st_mode & 0o7777) })?;
+        }
+        if valid.contains(SetattrValid::SIZE) {
+            let file = if let Some(opened) = &opened {
+                &opened.file
+            } else {
+                &self
+                    .root
+                    .reopen(&data.file, libc::O_RDWR | libc::O_NOFOLLOW)?
+            };
+            check_result(unsafe { libc::ftruncate(file.as_raw_fd(), attr.st_size) })?;
+            self.clear_privileges(file)?;
+        }
+        if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
+            self.clear_privileges(&data.file)?;
+        }
+        if valid.intersects(
+            SetattrValid::ATIME
+                | SetattrValid::MTIME
+                | SetattrValid::ATIME_NOW
+                | SetattrValid::MTIME_NOW,
+        ) {
+            let times = [
+                libc::timespec {
+                    tv_sec: attr.st_atime,
+                    tv_nsec: if valid.contains(SetattrValid::ATIME_NOW) {
+                        libc::UTIME_NOW
+                    } else if valid.contains(SetattrValid::ATIME) {
+                        attr.st_atime_nsec
+                    } else {
+                        libc::UTIME_OMIT
+                    },
+                },
+                libc::timespec {
+                    tv_sec: attr.st_mtime,
+                    tv_nsec: if valid.contains(SetattrValid::MTIME_NOW) {
+                        libc::UTIME_NOW
+                    } else if valid.contains(SetattrValid::MTIME) {
+                        attr.st_mtime_nsec
+                    } else {
+                        libc::UTIME_OMIT
+                    },
+                },
+            ];
+            check_result(unsafe { libc::futimens(data.file.as_raw_fd(), times.as_ptr()) })?;
+        }
+        self.getattr(ctx, inode, handle)
+    }
+
+    fn flush(&self, _ctx: Context, inode: u64, handle: u64, _lock_owner: u64) -> io::Result<()> {
+        self.handle(inode, handle)?;
+        Ok(())
+    }
+
+    fn fsync(&self, _ctx: Context, inode: u64, _datasync: bool, handle: u64) -> io::Result<()> {
+        let data = self.handle(inode, handle)?;
+        check_result(unsafe { libc::fsync(data.file.as_raw_fd()) })
+    }
+
+    fn fsyncdir(&self, ctx: Context, inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
+        self.fsync(ctx, inode, datasync, handle)
+    }
+
+    fn access(&self, ctx: Context, inode: u64, mask: u32) -> io::Result<()> {
+        let data = self.inode(inode)?;
+        let st = self.root.check(&data.file)?;
+        if mask & !7 != 0 {
+            return Err(error(libc::EINVAL));
+        }
+        if (ctx.uid != 0 && mask & !u32::from(st.st_mode >> 6) != 0)
+            || (ctx.uid == 0 && mask & libc::X_OK as u32 != 0 && st.st_mode & 0o111 == 0)
+        {
+            return Err(error(libc::EACCES));
+        }
+        Ok(())
+    }
+
+    fn readdir<F>(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        handle: u64,
+        size: u32,
+        offset: u64,
+        add_entry: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(DirEntry) -> io::Result<usize>,
+    {
+        self.directory_entries(inode, handle, size, offset, add_entry)
+    }
+
+    fn readdirplus<F>(
+        &self,
+        ctx: Context,
+        inode: u64,
+        handle: u64,
+        size: u32,
+        offset: u64,
+        mut add_entry: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(DirEntry, Entry) -> io::Result<usize>,
+    {
+        self.directory_entries(inode, handle, size, offset, |dir_entry| {
+            let name = CString::new(dir_entry.name).map_err(|_| error(libc::EINVAL))?;
+            let entry = self.lookup(ctx, inode, &name)?;
+            let looked_up = entry.inode;
+            match add_entry(dir_entry, entry) {
+                Ok(0) => {
+                    self.forget(ctx, looked_up, 1);
+                    Ok(0)
+                }
+                Err(err) => {
+                    self.forget(ctx, looked_up, 1);
+                    Err(err)
+                }
+                result => result,
+            }
+        })
+    }
+
+    fn lseek(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        handle: u64,
+        offset: u64,
+        whence: u32,
+    ) -> io::Result<u64> {
+        let data = self.handle(inode, handle)?;
+        let offset = i64::try_from(offset).map_err(|_| error(libc::EINVAL))?;
+        let whence = match whence {
+            3 => return Ok(offset as u64),
+            4 => libc::SEEK_END,
+            0..=2 => whence as i32,
+            _ => return Err(error(libc::EINVAL)),
+        };
+        let result = unsafe { libc::lseek(data.file.as_raw_fd(), offset, whence) };
+        if result < 0 {
+            Err(error(libc::EINVAL))
+        } else {
+            Ok(result as u64)
+        }
+    }
+
+    fn fallocate(
+        &self,
+        _ctx: Context,
+        inode: u64,
+        handle: u64,
+        mode: u32,
+        offset: u64,
+        length: u64,
+    ) -> io::Result<()> {
+        let data = self.handle(inode, handle)?;
+        let end = offset
+            .checked_add(length)
+            .and_then(|n| i64::try_from(n).ok())
+            .ok_or_else(|| error(libc::EINVAL))?;
+        let keep = bindings::LINUX_FALLOC_FL_KEEP_SIZE as u32;
+        let punch = bindings::LINUX_FALLOC_FL_PUNCH_HOLE as u32;
+        if mode & !(keep | punch) != 0 || (mode & punch != 0 && mode & keep == 0) {
+            return Err(error(libc::EOPNOTSUPP));
+        }
+        let fd = data.file.as_raw_fd();
+        if mode & punch != 0 {
+            let mut hole = libc::fpunchhole_t {
+                fp_offset: offset as i64,
+                fp_flags: 0,
+                reserved: 0,
+                fp_length: length as i64,
+            };
+            check_result(unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &mut hole) })
+        } else if mode & keep != 0 {
+            let disk_size = self.root.check(&data.file)?.st_blocks * 512;
+            if disk_size >= end {
+                return Ok(());
+            }
+            let mut store = libc::fstore_t {
+                fst_flags: libc::F_ALLOCATEALL,
+                fst_posmode: libc::F_PEOFPOSMODE,
+                fst_offset: 0,
+                fst_length: end - disk_size,
+                fst_bytesalloc: 0,
+            };
+            check_result(unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) })
+        } else if self.root.check(&data.file)?.st_size < end {
+            check_result(unsafe { libc::ftruncate(fd, end) })
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -173,7 +584,44 @@ mod tests {
     use super::super::test_utils::TestDir;
     use super::*;
     use std::fs;
+    use std::io::{Cursor, Read, Write};
+    use std::os::unix::fs::FileExt;
     use std::os::unix::fs::symlink;
+
+    #[derive(Default)]
+    struct Buffer(Cursor<Vec<u8>>);
+
+    impl Read for Buffer {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.write(buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ZeroCopyWriter for Buffer {
+        fn write_from(&mut self, file: &File, count: usize, offset: u64) -> io::Result<usize> {
+            let mut buf = vec![0; count];
+            let len = file.read_at(&mut buf, offset)?;
+            self.write_all(&buf[..len])?;
+            Ok(len)
+        }
+    }
+
+    impl ZeroCopyReader for Buffer {
+        fn read_to(&mut self, file: &File, count: usize, offset: u64) -> io::Result<usize> {
+            let mut buf = vec![0; count];
+            let len = self.read(&mut buf)?;
+            file.write_at(&buf[..len], offset)
+        }
+    }
 
     fn ctx() -> Context {
         Context {
@@ -228,5 +676,182 @@ mod tests {
         assert!(fs.getattr(ctx(), entry.inode, None).is_err());
         let replacement = fs.lookup(ctx(), fuse::ROOT_ID, c"file").unwrap();
         assert_ne!(entry.inode, replacement.inode);
+    }
+
+    #[test]
+    fn file_operations_use_checked_descriptors() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("file"), b"original").unwrap();
+        let fs = filesystem(&dir);
+        let entry = fs.lookup(ctx(), fuse::ROOT_ID, c"file").unwrap();
+        let (handle, options) = fs
+            .open(ctx(), entry.inode, false, libc::O_RDWR as u32)
+            .unwrap();
+        let handle = handle.unwrap();
+        assert!(options.contains(OpenOptions::DIRECT_IO));
+        let mut input = Buffer(Cursor::new(b"updated".to_vec()));
+        assert_eq!(
+            fs.write(
+                ctx(),
+                entry.inode,
+                handle,
+                &mut input,
+                7,
+                0,
+                None,
+                false,
+                true,
+                0
+            )
+            .unwrap(),
+            7
+        );
+        let mut attrs = entry.attr;
+        attrs.st_size = 7;
+        attrs.st_mode = 0o640;
+        fs.setattr(
+            ctx(),
+            entry.inode,
+            attrs,
+            None,
+            SetattrValid::SIZE | SetattrValid::MODE | SetattrValid::MTIME_NOW,
+        )
+        .unwrap();
+        let mut output = Buffer::default();
+        fs.read(ctx(), entry.inode, handle, &mut output, 20, 0, None, 0)
+            .unwrap();
+        assert_eq!(output.0.into_inner(), b"updated");
+        assert_eq!(
+            fs.getattr(ctx(), entry.inode, Some(handle))
+                .unwrap()
+                .0
+                .st_mode
+                & 0o777,
+            0o640
+        );
+        fs.fallocate(ctx(), entry.inode, handle, 0, 0, 32).unwrap();
+        assert_eq!(fs.lseek(ctx(), entry.inode, handle, 0, 2).unwrap(), 32);
+        assert!(
+            fs.fallocate(ctx(), entry.inode, handle, 0, u64::MAX, 1)
+                .is_err()
+        );
+        fs.fsync(ctx(), entry.inode, false, handle).unwrap();
+        fs.flush(ctx(), entry.inode, handle, 0).unwrap();
+        assert!(fs.getattr(ctx(), fuse::ROOT_ID, Some(handle)).is_err());
+        fs.release_handle(entry.inode, handle).unwrap();
+        assert!(fs.handle(entry.inode, handle).is_err());
+    }
+
+    #[test]
+    fn open_handles_are_rechecked_after_hardlink_creation_and_move() {
+        let dir = TestDir::new();
+        let outside = TestDir::new();
+        fs::write(dir.0.join("file"), b"original").unwrap();
+        let fs = filesystem(&dir);
+        let entry = fs.lookup(ctx(), fuse::ROOT_ID, c"file").unwrap();
+        let handle = fs
+            .open(ctx(), entry.inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        fs::hard_link(dir.0.join("file"), outside.0.join("linked")).unwrap();
+        let mut output = Buffer::default();
+        assert!(
+            fs.read(ctx(), entry.inode, handle, &mut output, 8, 0, None, 0)
+                .is_err()
+        );
+        let mut input = Buffer(Cursor::new(b"changed".to_vec()));
+        assert!(
+            fs.write(
+                ctx(),
+                entry.inode,
+                handle,
+                &mut input,
+                7,
+                0,
+                None,
+                false,
+                false,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            fs.open(ctx(), entry.inode, false, bindings::LINUX_O_TRUNC as u32)
+                .is_err()
+        );
+        fs::remove_file(outside.0.join("linked")).unwrap();
+        fs::rename(dir.0.join("file"), outside.0.join("moved")).unwrap();
+        assert!(fs.flush(ctx(), entry.inode, handle, 0).is_err());
+        assert!(fs.fallocate(ctx(), entry.inode, handle, 0, 0, 50).is_err());
+        assert_eq!(fs::read(outside.0.join("moved")).unwrap(), b"original");
+        fs.release_handle(entry.inode, handle).unwrap();
+    }
+
+    #[test]
+    fn symlink_targets_are_resolved_inside_the_export() {
+        let dir = TestDir::new();
+        let outside = TestDir::new();
+        fs::write(dir.0.join("file"), b"inside").unwrap();
+        fs::write(outside.0.join("file"), b"outside").unwrap();
+        symlink("/file", dir.0.join("internal")).unwrap();
+        symlink(outside.0.join("file"), dir.0.join("external")).unwrap();
+        let fs = filesystem(&dir);
+        let internal = fs.lookup(ctx(), fuse::ROOT_ID, c"internal").unwrap();
+        let handle = fs.open(ctx(), internal.inode, false, 0).unwrap().0.unwrap();
+        let mut output = Buffer::default();
+        fs.read(ctx(), internal.inode, handle, &mut output, 20, 0, None, 0)
+            .unwrap();
+        assert_eq!(output.0.into_inner(), b"inside");
+        assert!(
+            fs.open(
+                ctx(),
+                internal.inode,
+                false,
+                bindings::LINUX_O_NOFOLLOW as u32
+            )
+            .is_err()
+        );
+        let external = fs.lookup(ctx(), fuse::ROOT_ID, c"external").unwrap();
+        assert!(
+            fs.open(
+                ctx(),
+                external.inode,
+                false,
+                (bindings::LINUX_O_TRUNC | 1) as u32
+            )
+            .is_err()
+        );
+        assert!(
+            fs.setattr(
+                ctx(),
+                external.inode,
+                external.attr,
+                None,
+                SetattrValid::SIZE
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(outside.0.join("file")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn directory_reads_validate_handles_and_build_valid_names() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("file"), b"contents").unwrap();
+        let fs = filesystem(&dir);
+        let handle = fs.opendir(ctx(), fuse::ROOT_ID, 0).unwrap().0.unwrap();
+        let mut names = Vec::new();
+        fs.readdirplus(ctx(), fuse::ROOT_ID, handle, 4096, 0, |entry, attr| {
+            assert_eq!(attr.attr.st_size, 8);
+            names.push(entry.name.to_vec());
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(names, [b"file".to_vec()]);
+        assert!(
+            fs.readdir(ctx(), fuse::ROOT_ID + 1, handle, 4096, 0, |_| Ok(1))
+                .is_err()
+        );
     }
 }

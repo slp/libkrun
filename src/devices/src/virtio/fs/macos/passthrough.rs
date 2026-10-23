@@ -69,20 +69,20 @@ struct CachedDirEntry {
     type_: u8,
 }
 
-struct DirStream {
+pub(super) struct DirStream {
     entries: Vec<CachedDirEntry>,
     ready: bool,
 }
 
 impl DirStream {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             entries: Vec::new(),
             ready: false,
         }
     }
 
-    fn get_entry<'a>(&'a self, offset: u64) -> Option<DirEntry<'a>> {
+    pub(super) fn get_entry<'a>(&'a self, offset: u64) -> Option<DirEntry<'a>> {
         self.entries.get(offset as usize).map(|e| DirEntry {
             ino: e.ino,
             // offset points to the next entry, not the current one
@@ -92,7 +92,7 @@ impl DirStream {
         })
     }
 
-    fn fill_from_fd(&mut self, fd: RawFd) -> io::Result<()> {
+    pub(super) fn fill_from_fd(&mut self, fd: RawFd) -> io::Result<()> {
         // fdopendir() takes ownership of the fd, so we need to obtain a new one
         // to be donated.
         let newfd = unsafe { libc::dup(fd) };
@@ -1125,7 +1125,7 @@ impl PassthroughFs {
     }
 }
 
-fn parse_open_flags(flags: i32) -> i32 {
+pub(super) fn parse_open_flags(flags: i32) -> i32 {
     let mut mflags: i32 = flags & 0b11;
 
     if (flags & bindings::LINUX_O_NONBLOCK) != 0 {
