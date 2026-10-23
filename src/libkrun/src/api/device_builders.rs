@@ -35,7 +35,7 @@ use devices::virtio::block::{DiskFormat, SyncMode};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use devices::virtio::fs::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use devices::virtio::passthrough::PermissionSemantics;
+use devices::virtio::passthrough::PermissionSemantics as PassthroughPermissionSemantics;
 use devices::virtio::{PortDescription, VirtioDevice, VirtioShmRegion, VmmExitObserver, port_io};
 #[cfg(feature = "input")]
 use krun_input;
@@ -591,6 +591,25 @@ impl<'a> FsOverlay<'a> {
     }
 }
 
+/// Permission semantics used by a host-backed virtio-fs filesystem.
+#[cfg_attr(
+    feature = "ffi",
+    ffier::export(cfg = "not(any(feature = \"tee\", feature = \"aws-nitro\"))")
+)]
+#[cfg_attr(
+    not(feature = "ffi"),
+    cfg(not(any(feature = "tee", feature = "aws-nitro")))
+)]
+#[repr(u32)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionSemantics {
+    /// Emulate Linux ownership and permission semantics as closely as possible.
+    #[default]
+    LinuxComplete = 0,
+    /// Use simplified ownership and permissions without xattrs or idmaps.
+    LinuxSimplified = 1,
+}
+
 /// A virtio-fs (virtiofs) shared filesystem device.
 ///
 /// Exposes a host directory to the guest as a shared filesystem.
@@ -655,6 +674,30 @@ impl<'a> FsDevice<'a> {
     pub fn set_dax_window_size(&mut self, bytes: u64) {
         self.shm_size = Some(bytes as usize);
     }
+
+    /// Select the permission semantics before attaching this device.
+    ///
+    /// Defaults to `LinuxComplete`. `LinuxSimplified` disables xattrs and idmaps
+    /// and disables attribute caching because ownership depends on the requester.
+    /// A NullFs device has no host permission semantics and returns `InvalidParam`.
+    pub fn set_permission_semantics(
+        &mut self,
+        semantics: PermissionSemantics,
+    ) -> Result<(), VmmError> {
+        let semantics = match semantics {
+            PermissionSemantics::LinuxComplete => PassthroughPermissionSemantics::LinuxComplete,
+            PermissionSemantics::LinuxSimplified => PassthroughPermissionSemantics::LinuxSimplified,
+        };
+        if !self
+            .inner
+            .lock()
+            .unwrap()
+            .set_permission_semantics(semantics)
+        {
+            return Err(VmmError::InvalidParam());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
@@ -663,7 +706,7 @@ impl<'a> FsDevice<'a> {
         let exit_code = Arc::new(AtomicI32::new(i32::MAX));
         let fs = devices::virtio::Fs::new(
             tag.to_string(),
-            PermissionSemantics::LinuxComplete,
+            PassthroughPermissionSemantics::LinuxComplete,
             host_path,
             exit_code.clone(),
             read_only,
