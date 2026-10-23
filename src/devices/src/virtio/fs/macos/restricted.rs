@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use super::confined::{Root, check_result, error, read_link};
+use super::confined::{Root, check_result, error, open_at, read_link, validate_name};
 use super::passthrough::{DirStream, InodeAltKey, PermissionSemantics, fstat, parse_open_flags};
 use crate::virtio::bindings;
 use crate::virtio::fs::filesystem::{
-    Context, DirEntry, Entry, FileSystem, FsOptions, OpenOptions, SetattrValid, ZeroCopyReader,
-    ZeroCopyWriter,
+    Context, DirEntry, Entry, Extensions, FileSystem, FsOptions, OpenOptions, SetattrValid,
+    ZeroCopyReader, ZeroCopyWriter,
 };
 use crate::virtio::fs::fuse;
 use crate::virtio::fs::inode_alloc::InodeAllocator;
@@ -123,6 +123,28 @@ impl RestrictedFs {
             }),
         );
         handle
+    }
+
+    fn directory(&self, parent: u64, name: &CStr) -> io::Result<Arc<InodeData>> {
+        validate_name(name)?;
+        let data = self.inode(parent)?;
+        if self.root.check(&data.file)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(error(libc::ENOTDIR));
+        }
+        Ok(data)
+    }
+
+    fn check_extensions(&self, extensions: &Extensions) -> io::Result<()> {
+        if extensions.secctx.is_some() {
+            return Err(error(libc::EOPNOTSUPP));
+        }
+        Ok(())
+    }
+
+    fn unlink_name(&self, parent: u64, name: &CStr, flags: i32) -> io::Result<()> {
+        let dir = self.directory(parent, name)?;
+        let _file = self.root.child(&dir.file, name)?;
+        check_result(unsafe { libc::unlinkat(dir.file.as_raw_fd(), name.as_ptr(), flags) })
     }
 
     fn open_file(
@@ -290,6 +312,166 @@ impl FileSystem for RestrictedFs {
         _newname: &CStr,
     ) -> io::Result<Entry> {
         Err(error(libc::EPERM))
+    }
+
+    fn create(
+        &self,
+        ctx: Context,
+        parent: u64,
+        name: &CStr,
+        mode: u32,
+        kill_priv: bool,
+        flags: u32,
+        umask: u32,
+        extensions: Extensions,
+    ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
+        self.check_extensions(&extensions)?;
+        if mode as u16 & libc::S_IFMT != 0 && mode as u16 & libc::S_IFMT != libc::S_IFREG {
+            return Err(error(libc::EOPNOTSUPP));
+        }
+        let dir = self.directory(parent, name)?;
+        let flags = parse_open_flags(flags as i32);
+        let file = match self.root.child(&dir.file, name) {
+            Ok(file) => {
+                if flags & libc::O_EXCL != 0 {
+                    return Err(error(libc::EEXIST));
+                }
+                self.root.reopen(&file, flags | libc::O_NOFOLLOW)?
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                let file = open_at(
+                    dir.file.as_raw_fd(),
+                    name,
+                    (flags & !libc::O_TRUNC) | libc::O_CREAT | libc::O_EXCL,
+                    mode as u16 & !umask as u16 & 0o7777,
+                )?;
+                self.root.check(&file)?;
+                check_result(unsafe {
+                    libc::fchmod(file.as_raw_fd(), mode as u16 & !umask as u16 & 0o7777)
+                })?;
+                file
+            }
+            Err(err) => return Err(err),
+        };
+        if flags & libc::O_TRUNC != 0 {
+            check_result(unsafe { libc::ftruncate(file.as_raw_fd(), 0) })?;
+            if kill_priv {
+                self.clear_privileges(&file)?;
+            }
+        }
+        let entry = self.entry(ctx, file.try_clone()?)?;
+        let source = self.inode(entry.inode)?;
+        let handle = self.insert_handle(source, file);
+        Ok((entry, Some(handle), OpenOptions::DIRECT_IO))
+    }
+
+    fn mkdir(
+        &self,
+        ctx: Context,
+        parent: u64,
+        name: &CStr,
+        mode: u32,
+        umask: u32,
+        extensions: Extensions,
+    ) -> io::Result<Entry> {
+        self.check_extensions(&extensions)?;
+        let dir = self.directory(parent, name)?;
+        let mode = mode as u16 & !umask as u16 & 0o7777;
+        check_result(unsafe { libc::mkdirat(dir.file.as_raw_fd(), name.as_ptr(), mode) })?;
+        let file = self.root.child(&dir.file, name)?;
+        check_result(unsafe { libc::fchmod(file.as_raw_fd(), mode) })?;
+        self.entry(ctx, file)
+    }
+
+    fn mknod(
+        &self,
+        ctx: Context,
+        parent: u64,
+        name: &CStr,
+        mode: u32,
+        _rdev: u32,
+        umask: u32,
+        extensions: Extensions,
+    ) -> io::Result<Entry> {
+        if mode as u16 & libc::S_IFMT != libc::S_IFREG {
+            return Err(error(libc::EOPNOTSUPP));
+        }
+        let (entry, handle, _) = self.create(
+            ctx,
+            parent,
+            name,
+            mode,
+            false,
+            (bindings::LINUX_O_CREAT | bindings::LINUX_O_EXCL | 1) as u32,
+            umask,
+            extensions,
+        )?;
+        self.release_handle(entry.inode, handle.unwrap())?;
+        Ok(entry)
+    }
+
+    fn symlink(
+        &self,
+        ctx: Context,
+        linkname: &CStr,
+        parent: u64,
+        name: &CStr,
+        extensions: Extensions,
+    ) -> io::Result<Entry> {
+        self.check_extensions(&extensions)?;
+        let dir = self.directory(parent, name)?;
+        check_result(unsafe {
+            libc::symlinkat(linkname.as_ptr(), dir.file.as_raw_fd(), name.as_ptr())
+        })?;
+        self.entry(ctx, self.root.child(&dir.file, name)?)
+    }
+
+    fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        self.unlink_name(parent, name, 0)
+    }
+
+    fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        self.unlink_name(parent, name, libc::AT_REMOVEDIR)
+    }
+
+    fn rename(
+        &self,
+        _ctx: Context,
+        olddir: u64,
+        oldname: &CStr,
+        newdir: u64,
+        newname: &CStr,
+        flags: u32,
+    ) -> io::Result<()> {
+        let exclusive = bindings::LINUX_RENAME_NOREPLACE as u32;
+        let exchange = bindings::LINUX_RENAME_EXCHANGE as u32;
+        if flags & !(exclusive | exchange) != 0 || flags == exclusive | exchange {
+            return Err(error(libc::EINVAL));
+        }
+        let olddir = self.directory(olddir, oldname)?;
+        let newdir = self.directory(newdir, newname)?;
+        let _source = self.root.child(&olddir.file, oldname)?;
+        let _destination = match self.root.child(&newdir.file, newname) {
+            Ok(file) => Some(file),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err),
+        };
+        let host_flags = if flags & exclusive != 0 {
+            libc::RENAME_EXCL
+        } else if flags & exchange != 0 {
+            libc::RENAME_SWAP
+        } else {
+            0
+        };
+        check_result(unsafe {
+            libc::renameatx_np(
+                olddir.file.as_raw_fd(),
+                oldname.as_ptr(),
+                newdir.file.as_raw_fd(),
+                newname.as_ptr(),
+                host_flags,
+            )
+        })
     }
 
     fn open(
@@ -853,5 +1035,264 @@ mod tests {
             fs.readdir(ctx(), fuse::ROOT_ID + 1, handle, 4096, 0, |_| Ok(1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn creates_and_renames_entries_using_checked_parents() {
+        let dir = TestDir::new();
+        let fs = filesystem(&dir);
+        let directory = fs
+            .mkdir(
+                ctx(),
+                fuse::ROOT_ID,
+                c"directory",
+                0o750,
+                0,
+                Extensions::default(),
+            )
+            .unwrap();
+        let (entry, handle, _) = fs
+            .create(
+                ctx(),
+                directory.inode,
+                c"file",
+                0o640,
+                false,
+                2,
+                0,
+                Extensions::default(),
+            )
+            .unwrap();
+        let handle = handle.unwrap();
+        let mut input = Buffer(Cursor::new(b"contents".to_vec()));
+        fs.write(
+            ctx(),
+            entry.inode,
+            handle,
+            &mut input,
+            8,
+            0,
+            None,
+            false,
+            false,
+            0,
+        )
+        .unwrap();
+        fs.rename(ctx(), directory.inode, c"file", fuse::ROOT_ID, c"moved", 0)
+            .unwrap();
+        assert_eq!(fs.getattr(ctx(), entry.inode, None).unwrap().0.st_size, 8);
+        fs.flush(ctx(), entry.inode, handle, 0).unwrap();
+        fs.rmdir(ctx(), fuse::ROOT_ID, c"directory").unwrap();
+        fs.unlink(ctx(), fuse::ROOT_ID, c"moved").unwrap();
+        assert!(fs.flush(ctx(), entry.inode, handle, 0).is_err());
+        fs.release_handle(entry.inode, handle).unwrap();
+    }
+
+    #[test]
+    fn deleting_and_renaming_symlinks_leave_targets_untouched() {
+        let dir = TestDir::new();
+        let outside = TestDir::new();
+        fs::write(outside.0.join("file"), b"outside").unwrap();
+        let fs = filesystem(&dir);
+        let target = CString::new(outside.0.join("file").as_os_str().as_encoded_bytes()).unwrap();
+        let link = fs
+            .symlink(
+                ctx(),
+                &target,
+                fuse::ROOT_ID,
+                c"link",
+                Extensions::default(),
+            )
+            .unwrap();
+        assert_eq!(fs.readlink(ctx(), link.inode).unwrap(), target.to_bytes());
+        fs.rename(ctx(), fuse::ROOT_ID, c"link", fuse::ROOT_ID, c"renamed", 0)
+            .unwrap();
+        fs.unlink(ctx(), fuse::ROOT_ID, c"renamed").unwrap();
+        assert_eq!(fs::read(outside.0.join("file")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn namespace_operations_reject_hardlinks_before_modifying_files() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("file"), b"original").unwrap();
+        fs::write(dir.0.join("other"), b"other").unwrap();
+        fs::hard_link(dir.0.join("file"), dir.0.join("linked")).unwrap();
+        let fs = filesystem(&dir);
+        assert!(
+            fs.create(
+                ctx(),
+                fuse::ROOT_ID,
+                c"file",
+                0o600,
+                false,
+                (bindings::LINUX_O_TRUNC | 1) as u32,
+                0,
+                Extensions::default()
+            )
+            .is_err()
+        );
+        assert!(fs.unlink(ctx(), fuse::ROOT_ID, c"file").is_err());
+        assert!(
+            fs.rename(ctx(), fuse::ROOT_ID, c"file", fuse::ROOT_ID, c"other", 0)
+                .is_err()
+        );
+        assert!(
+            fs.rename(ctx(), fuse::ROOT_ID, c"other", fuse::ROOT_ID, c"file", 0)
+                .is_err()
+        );
+        assert_eq!(fs::read(dir.0.join("file")).unwrap(), b"original");
+        assert_eq!(fs::read(dir.0.join("other")).unwrap(), b"other");
+    }
+
+    #[test]
+    fn rejects_invalid_names_and_moved_directory_parents() {
+        let dir = TestDir::new();
+        let outside = TestDir::new();
+        fs::create_dir(dir.0.join("directory")).unwrap();
+        let fs = filesystem(&dir);
+        for name in [c"", c".", c"..", c"a/b", c"../escape", c"/escape"] {
+            assert!(
+                fs.create(
+                    ctx(),
+                    fuse::ROOT_ID,
+                    name,
+                    0o600,
+                    false,
+                    2,
+                    0,
+                    Extensions::default()
+                )
+                .is_err()
+            );
+            assert!(
+                fs.mkdir(ctx(), fuse::ROOT_ID, name, 0o700, 0, Extensions::default())
+                    .is_err()
+            );
+            assert!(fs.unlink(ctx(), fuse::ROOT_ID, name).is_err());
+            assert!(
+                fs.symlink(ctx(), c"target", fuse::ROOT_ID, name, Extensions::default())
+                    .is_err()
+            );
+        }
+        let directory = fs.lookup(ctx(), fuse::ROOT_ID, c"directory").unwrap();
+        fs::rename(dir.0.join("directory"), outside.0.join("directory")).unwrap();
+        assert!(
+            fs.create(
+                ctx(),
+                directory.inode,
+                c"file",
+                0o600,
+                false,
+                2,
+                0,
+                Extensions::default()
+            )
+            .is_err()
+        );
+        assert!(
+            fs.mkdir(
+                ctx(),
+                directory.inode,
+                c"new",
+                0o700,
+                0,
+                Extensions::default()
+            )
+            .is_err()
+        );
+        assert!(!outside.0.join("directory/file").exists());
+        assert!(!outside.0.join("directory/new").exists());
+    }
+
+    #[test]
+    fn rename_flags_and_overwrite_preserve_inode_identity() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("first"), b"first").unwrap();
+        fs::write(dir.0.join("second"), b"second").unwrap();
+        let fs = filesystem(&dir);
+        let first = fs.lookup(ctx(), fuse::ROOT_ID, c"first").unwrap();
+        let second = fs.lookup(ctx(), fuse::ROOT_ID, c"second").unwrap();
+        assert!(
+            fs.rename(
+                ctx(),
+                fuse::ROOT_ID,
+                c"first",
+                fuse::ROOT_ID,
+                c"second",
+                bindings::LINUX_RENAME_NOREPLACE as u32
+            )
+            .is_err()
+        );
+        assert!(
+            fs.rename(
+                ctx(),
+                fuse::ROOT_ID,
+                c"first",
+                fuse::ROOT_ID,
+                c"second",
+                bindings::LINUX_RENAME_WHITEOUT as u32
+            )
+            .is_err()
+        );
+        fs.rename(
+            ctx(),
+            fuse::ROOT_ID,
+            c"first",
+            fuse::ROOT_ID,
+            c"second",
+            bindings::LINUX_RENAME_EXCHANGE as u32,
+        )
+        .unwrap();
+        assert_eq!(
+            fs.lookup(ctx(), fuse::ROOT_ID, c"first").unwrap().inode,
+            second.inode
+        );
+        fs.rename(ctx(), fuse::ROOT_ID, c"first", fuse::ROOT_ID, c"second", 0)
+            .unwrap();
+        assert!(fs.getattr(ctx(), first.inode, None).is_err());
+        assert!(fs.getattr(ctx(), second.inode, None).is_ok());
+    }
+
+    #[test]
+    fn rejects_special_files_and_security_contexts_before_creation() {
+        use crate::virtio::fs::filesystem::SecContext;
+
+        let dir = TestDir::new();
+        let fs = filesystem(&dir);
+        for kind in [libc::S_IFIFO, libc::S_IFSOCK, libc::S_IFCHR, libc::S_IFBLK] {
+            assert!(
+                fs.mknod(
+                    ctx(),
+                    fuse::ROOT_ID,
+                    c"special",
+                    u32::from(kind | 0o600),
+                    0,
+                    0,
+                    Extensions::default()
+                )
+                .is_err()
+            );
+        }
+        let extensions = Extensions {
+            secctx: Some(SecContext {
+                name: CString::from(c"security.test"),
+                secctx: b"context".to_vec(),
+            }),
+            ..Default::default()
+        };
+        assert!(
+            fs.create(
+                ctx(),
+                fuse::ROOT_ID,
+                c"file",
+                0o600,
+                false,
+                2,
+                0,
+                extensions
+            )
+            .is_err()
+        );
+        assert!(fs::read_dir(&dir.0).unwrap().next().is_none());
     }
 }
