@@ -2,6 +2,11 @@ pub mod fs_utils;
 pub mod passthrough;
 
 #[cfg(test)]
+mod confined;
+#[cfg(test)]
+mod restricted;
+
+#[cfg(test)]
 mod test_utils {
     use std::env;
     use std::fs;
