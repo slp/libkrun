@@ -166,6 +166,12 @@ typedef void (*krun_free_object_array_fn)(KrunObjectArray a);
 #define KRUN_PERMISSION_SEMANTICS_LINUX_COMPLETE 0
 #define KRUN_PERMISSION_SEMANTICS_LINUX_SIMPLIFIED 1
 
+/* CachePolicy ------------------------------------------------------- */
+
+#define KRUN_CACHE_POLICY_NEVER 0
+#define KRUN_CACHE_POLICY_AUTO 1
+#define KRUN_CACHE_POLICY_ALWAYS 2
+
 /* LogOptions -------------------------------------------------------- */
 
 #define KRUN_LOG_OPTIONS_NO_ENV 1
@@ -266,6 +272,17 @@ typedef void (*krun_fs_device_set_dax_window_size_fn)(KrunFsDevice handle, uint6
  */
 KrunResult krun_fs_device_set_permission_semantics(KrunFsDevice handle, uint32_t semantics, KrunError* err_out);
 typedef KrunResult (*krun_fs_device_set_permission_semantics_fn)(KrunFsDevice handle, uint32_t semantics, KrunError* err_out);
+/**
+ * Select guest file-data caching before attaching this device.
+ *
+ * Defaults to `Auto`, which uses close-to-open consistency. `Never` forwards file-data
+ * I/O to the server without caching it in the guest. `Always` keeps cached file data
+ * across opens and should only be used when the filesystem has exclusive access to
+ * the shared directory. Attribute caching is controlled by the permission semantics.
+ * A NullFs device has no host-backed file data and returns `InvalidParam`.
+ */
+KrunResult krun_fs_device_set_cache_policy(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
+typedef KrunResult (*krun_fs_device_set_cache_policy_fn)(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
 void krun_fs_device_destroy(KrunFsDevice handle);
 typedef void (*krun_fs_device_destroy_fn)(KrunFsDevice handle);
 

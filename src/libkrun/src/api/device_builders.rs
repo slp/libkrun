@@ -35,9 +35,9 @@ use devices::virtio::balloon::FreePageReportingMode;
 #[cfg(feature = "blk")]
 use devices::virtio::block::{DiskFormat, SyncMode};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-pub use devices::virtio::fs::PermissionSemantics;
-#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use devices::virtio::fs::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+pub use devices::virtio::fs::{CachePolicy, PermissionSemantics};
 use devices::virtio::{PortDescription, VirtioDevice, VirtioShmRegion, VmmExitObserver, port_io};
 #[cfg(feature = "input")]
 use krun_input;
@@ -677,6 +677,20 @@ impl<'a> FsDevice<'a> {
             .unwrap()
             .set_permission_semantics(semantics)
         {
+            return Err(VmmError::InvalidParam());
+        }
+        Ok(())
+    }
+
+    /// Select guest file-data caching before attaching this device.
+    ///
+    /// Defaults to `Auto`, which uses close-to-open consistency. `Never` forwards file-data
+    /// I/O to the server without caching it in the guest. `Always` keeps cached file data
+    /// across opens and should only be used when the filesystem has exclusive access to
+    /// the shared directory. Attribute caching is controlled by the permission semantics.
+    /// A NullFs device has no host-backed file data and returns `InvalidParam`.
+    pub fn set_cache_policy(&mut self, policy: CachePolicy) -> Result<(), VmmError> {
+        if !self.inner.lock().unwrap().set_cache_policy(policy) {
             return Err(VmmError::InvalidParam());
         }
         Ok(())

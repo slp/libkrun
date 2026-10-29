@@ -25,6 +25,8 @@ pub use device_builders::BalloonDevice;
 #[cfg(feature = "blk")]
 pub use device_builders::BlockDevice;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+pub use device_builders::CachePolicy;
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub use device_builders::FsDevice;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub use device_builders::FsOverlay;
@@ -150,6 +152,8 @@ ffier::library_definition!("krun", library_tag = 1,
     enum crate::api::logging::LogStyle,
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     enum devices::virtio::fs::PermissionSemantics,
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    enum devices::virtio::fs::CachePolicy,
     fn crate::api::logging::init_log,
     fn crate::api::vmm_builder::check_nested_virt,
     bitflags crate::api::logging::LogOptions,

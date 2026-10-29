@@ -22,7 +22,7 @@ use super::ExportTable;
 use super::passthrough;
 use super::virtual_entry::VirtualDirEntry;
 use super::worker::FsWorker;
-use super::{PermissionSemantics, defs, defs::uapi};
+use super::{CachePolicy, PermissionSemantics, defs, defs::uapi};
 use crate::virtio::InterruptTransport;
 
 #[derive(Copy, Clone)]
@@ -130,6 +130,14 @@ impl Fs {
         };
         cfg.xattr = complete;
         self.allow_idmap = complete;
+        true
+    }
+
+    pub fn set_cache_policy(&mut self, policy: CachePolicy) -> bool {
+        let Some(cfg) = self.passthrough_cfg.as_mut() else {
+            return false;
+        };
+        cfg.cache_policy = policy;
         true
     }
 
@@ -278,7 +286,7 @@ impl VirtioDevice for Fs {
 }
 
 #[cfg(test)]
-mod permission_tests {
+mod tests {
     use super::*;
 
     fn filesystem(shared_dir: Option<String>) -> Fs {
@@ -324,6 +332,55 @@ mod permission_tests {
     fn null_filesystems_reject_permission_changes() {
         let mut fs = filesystem(None);
         assert!(!fs.set_permission_semantics(PermissionSemantics::LinuxSimplified));
+        assert!(fs.allow_idmap);
+        assert!(fs.passthrough_cfg.is_none());
+    }
+
+    #[test]
+    fn cache_policy_changes_preserve_permission_options() {
+        let mut fs = filesystem(Some("/".to_owned()));
+        assert_eq!(
+            fs.passthrough_cfg.as_ref().unwrap().cache_policy,
+            CachePolicy::Auto
+        );
+        let attr_timeout = Duration::from_millis(123);
+        fs.passthrough_cfg.as_mut().unwrap().attr_timeout = attr_timeout;
+
+        for policy in [CachePolicy::Never, CachePolicy::Always, CachePolicy::Auto] {
+            assert!(fs.set_cache_policy(policy));
+            let cfg = fs.passthrough_cfg.as_ref().unwrap();
+            assert_eq!(cfg.cache_policy, policy);
+            assert!(matches!(cfg.semantics, PermissionSemantics::LinuxComplete));
+            assert_eq!(cfg.attr_timeout, attr_timeout);
+            assert!(cfg.xattr);
+            assert!(fs.allow_idmap);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn permission_changes_preserve_cache_policy() {
+        let mut fs = filesystem(Some("/".to_owned()));
+        assert!(fs.set_cache_policy(CachePolicy::Always));
+
+        for semantics in [
+            PermissionSemantics::LinuxSimplified,
+            PermissionSemantics::LinuxComplete,
+        ] {
+            assert!(fs.set_permission_semantics(semantics));
+            assert_eq!(
+                fs.passthrough_cfg.as_ref().unwrap().cache_policy,
+                CachePolicy::Always
+            );
+        }
+    }
+
+    #[test]
+    fn null_filesystems_reject_cache_policy_changes() {
+        let mut fs = filesystem(None);
+        for policy in [CachePolicy::Never, CachePolicy::Auto, CachePolicy::Always] {
+            assert!(!fs.set_cache_policy(policy));
+        }
         assert!(fs.allow_idmap);
         assert!(fs.passthrough_cfg.is_none());
     }

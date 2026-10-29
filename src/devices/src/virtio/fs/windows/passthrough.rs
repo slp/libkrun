@@ -2,8 +2,8 @@
 // Uses NTFS file index + volume serial for inode identity and
 // Alternate Data Streams (ADS) for extended-attribute emulation.
 
-pub use super::super::PermissionSemantics;
 use super::super::inode_alloc::InodeAllocator;
+pub use super::super::{CachePolicy, PermissionSemantics};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, OsString};
 use std::fs::{self, File};
@@ -12,7 +12,6 @@ use std::mem::{self, ManuallyDrop};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -168,27 +167,6 @@ struct CachedDirEntry {
     ino: u64,
     name: Vec<u8>,
     type_: u32,
-}
-
-// CachePolicy — mirrors the macOS version
-#[derive(Debug, Default, Clone)]
-pub enum CachePolicy {
-    Never,
-    #[default]
-    Auto,
-    Always,
-}
-
-impl FromStr for CachePolicy {
-    type Err = &'static str;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "never" | "Never" | "NEVER" => Ok(CachePolicy::Never),
-            "auto" | "Auto" | "AUTO" => Ok(CachePolicy::Auto),
-            "always" | "Always" | "ALWAYS" => Ok(CachePolicy::Always),
-            _ => Err("invalid cache policy"),
-        }
-    }
 }
 
 /// Options that configure the behavior of the file system.
